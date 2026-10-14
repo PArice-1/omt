@@ -1,6 +1,7 @@
 # 读取setting
 from typing import Annotated
 from pathlib import Path
+from functools import cache
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -21,12 +22,12 @@ class Settings(BaseSettings):
         然后判断这个default是不是在里面，防止用户瞎改
     '''
 
+@cache
+def load_settings() -> Settings:
+    # settings.json position
+    settings_path = root / "agent" / "settings.json"
 
-# settings.json position
-settings_path = root / "agent" / "settings.json"
-
-settings = Settings.model_validate_json(
+    return  Settings.model_validate_json(
     settings_path.read_text(encoding="utf-8")
-)
+    )
 
-print(settings)

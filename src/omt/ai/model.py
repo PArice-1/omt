@@ -22,14 +22,14 @@ class Model:
         self.provider = provider
         self.model = model
         self.base_url = base_url
-        self.model = self.init_model(
+        self.model = self._init_model(
             provider,
             model=model,
             base_url=base_url,
             args=kwargs,
         )
 
-    def init_model(
+    def _init_model(
         self,
         provider: str,
         *,

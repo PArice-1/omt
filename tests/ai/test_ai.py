@@ -1,9 +1,9 @@
-"""测试对象：src/omt/ai/ai.py::Model（__init__、init_model）。
+"""测试对象：src/omt/ai/ai.py::Model（__init__、_init_model）。
 
 覆盖内容：
 1. 构造函数立即初始化模型，保存 provider/base_url，self.model 是可调用模型。
 2. kwargs 经 models_provider/deepseek_init 传给外部模型初始化函数。
-3. init_model 支持显式参数并返回模型实例。
+3. _init_model 支持显式参数并返回模型实例。
 4. 未知提供商、缺失密钥、空密钥和外部初始化失败会使构造失败，而非存入错误对象。
 
 隔离方式：保留 Model → models_provider → deepseek_init 的真实调用链；
@@ -16,7 +16,7 @@ import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from pydantic import HttpUrl, SecretStr, ValidationError
 
-from omt.ai.ai import Model
+from omt.ai.model import Model
 
 
 def test_constructor_initializes_and_stores_usable_model(
@@ -44,7 +44,7 @@ def test_constructor_initializes_and_stores_usable_model(
     )
 
 
-def test_init_model_returns_model_using_explicit_parameters(
+def test_private_init_model_returns_model_using_explicit_parameters(
     chat_model_factory: Mock, chat_model: FakeListChatModel
 ):
     client = Model(
@@ -55,7 +55,7 @@ def test_init_model_returns_model_using_explicit_parameters(
     )
     chat_model_factory.reset_mock()
 
-    result = client.init_model(
+    result = client._init_model(
         "deepseek",
         model="deepseek-reasoner",
         base_url=HttpUrl("https://api.deepseek.com/v1"),

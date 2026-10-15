@@ -13,12 +13,13 @@ dependencies = [
     "langchain-deepseek>=1.1.1",
     "langgraph>=1.2.14",
     "loadenv>=0.1.1",
+    "prompt-toolkit>=3.0.52",
     "pydantic-settings>=2.15.0",
     "pytest>=9.1.1",
 ]
 
 [project.scripts]
-omt = "omt:main"
+omt = "omt.coding_agent.session:session"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

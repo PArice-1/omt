@@ -17,7 +17,7 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings
 
-root = Path(".")
+root = Path("~/.omt").expanduser().resolve()
 NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 

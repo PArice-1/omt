@@ -1,7 +1,7 @@
 """测试对象：src/omt/coding_agent/tools_manager.py::load_tools。
 
 覆盖内容：
-1. 返回名为 edit/read/write 的 LangChain BaseTool 列表，无重复名称。
+1. 返回名为 edit/read/write/bash 的 LangChain BaseTool 列表，无重复名称。
 2. 每次返回独立列表，修改一个列表不会影响后续加载。
 3. 在其他工作目录下仍能加载工具，并通过工具调用完成写入、读取、编辑的闭环。
 
@@ -21,8 +21,8 @@ def test_load_tools_returns_builtin_langchain_tools():
     tools = load_tools()
 
     assert isinstance(tools, list)
-    assert len(tools) == 3
-    assert {tool.name for tool in tools} == {"edit", "read", "write"}
+    assert len(tools) == 4
+    assert {tool.name for tool in tools} == {"edit", "read", "write", "bash"}
     assert all(isinstance(tool, BaseTool) for tool in tools)
 
 
@@ -32,8 +32,8 @@ def test_load_tools_returns_independent_lists():
 
     assert first is not second
     first.clear()
-    assert len(second) == 3
-    assert {tool.name for tool in load_tools()} == {"edit", "read", "write"}
+    assert len(second) == 4
+    assert {tool.name for tool in load_tools()} == {"edit", "read", "write", "bash"}
 
 
 def test_loaded_tools_work_outside_project_directory(

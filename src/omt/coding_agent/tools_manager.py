@@ -1,15 +1,16 @@
-"""通过 AST 发现工具定义，并导入对应的 LangChain 工具。"""
+"""加载内置的 LangChain 工具。"""
 
 
 from langchain_core.tools import BaseTool
 
+from .tools.bash import bash
 from .tools.edit import edit
 from .tools.read import read
 from .tools.write import write
 
 def load_tools() -> list[BaseTool]:
     """返回内置工具，每次调用创建一个新的列表"""
-    return [edit, read, write]
+    return [edit, read, write, bash]
 
 
 

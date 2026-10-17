@@ -1,8 +1,11 @@
 """会话回归测试：真实 Agent 图、本地假模型和工具，不访问网络。"""
 
+import asyncio
+from collections.abc import AsyncIterator
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
@@ -11,8 +14,10 @@ from langchain_core.language_models.fake_chat_models import (
     FakeListChatModel,
     FakeMessagesListChatModel,
 )
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-from langchain_core.outputs import ChatResult
+from langchain_core.messages import (
+    AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage,
+)
+from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -20,7 +25,18 @@ from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
 
 from omt.agent.agent import Agent
+from omt.coding_agent import settings as settings_module
 from omt.coding_agent.runtime import CreateAgentSession
+from omt.coding_agent.tools.read import read
+
+
+@pytest.fixture(autouse=True)
+def isolated_runtime_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """隔离默认 Skills 的用户目录与项目目录，不读取本机文件。"""
+    monkeypatch.setattr(settings_module, "root", tmp_path / ".omt")
+    monkeypatch.chdir(tmp_path)
 
 
 class LocalToolModel(FakeMessagesListChatModel):
@@ -489,3 +505,389 @@ def test_missing_final_state_does_not_commit_user_message(monkeypatch):
         session.run("不要丢失最终状态")
 
     assert session.messages == []
+
+
+def _write_runtime_skill(root: Path, description: str = "审查代码") -> Path:
+    file = root / "review" / "SKILL.md"
+    file.parent.mkdir(parents=True, exist_ok=True)
+    content = f"---\nname: review\ndescription: {description}\n---\n私有正文\n"
+    _ = file.write_text(content, encoding="utf-8")
+    return file
+
+
+@pytest.mark.parametrize("prompt", ["", " \n\t"])
+def test_initial_history_omits_empty_system_messages(prompt: str) -> None:
+    session = CreateAgentSession(
+        Agent(FakeListChatModel(responses=["未使用"])),
+        system_prompt=prompt,
+        skill_roots=[],
+    )
+
+    assert session.messages == []
+
+
+def test_external_system_prompt_is_preserved_in_initial_history() -> None:
+    prompt = "  你是编码助手。\n保留提示词的原始格式。\n"
+    session = CreateAgentSession(
+        Agent(FakeListChatModel(responses=["未使用"])),
+        system_prompt=prompt,
+        skill_roots=[],
+    )
+
+    assert len(session.messages) == 1
+    assert isinstance(session.messages[0], SystemMessage)
+    assert session.messages[0].content == prompt
+
+
+def test_initial_history_combines_external_prompt_and_skill_catalog(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "custom"
+    file = _write_runtime_skill(root)
+    session = CreateAgentSession(
+        Agent(FakeListChatModel(responses=["未使用"])),
+        system_prompt="基础规则",
+        skill_roots=[root],
+    )
+
+    assert len(session.messages) == 1
+    message = session.messages[0]
+    assert isinstance(message, SystemMessage)
+    assert message.text.startswith("基础规则\n\n## 可用 Skills")
+    assert str(file.resolve()) in message.text
+    assert "私有正文" not in message.text
+    assert "limit=false" in message.text
+
+
+def test_default_skill_roots_prefer_project_over_user(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    user = _write_runtime_skill(settings_module.root / "agent" / "skills", "用户版本")
+    project = _write_runtime_skill(tmp_path / "skills", "项目版本")
+
+    session = CreateAgentSession(Agent(FakeListChatModel(responses=["未使用"])))
+
+    assert len(session.messages) == 1
+    assert isinstance(session.messages[0], SystemMessage)
+    assert "项目版本" in session.messages[0].text
+    assert "用户版本" not in session.messages[0].text
+    assert str(project.resolve()) in session.messages[0].text
+    diagnostic = capsys.readouterr().err
+    assert "[Skills]" in diagnostic
+    assert str(user) in diagnostic
+    assert str(project) in diagnostic
+
+
+def test_empty_skill_roots_disable_default_discovery(tmp_path: Path) -> None:
+    _ = _write_runtime_skill(settings_module.root / "agent" / "skills")
+    _ = _write_runtime_skill(tmp_path / "skills")
+
+    session = CreateAgentSession(
+        Agent(FakeListChatModel(responses=["未使用"])), skill_roots=[]
+    )
+
+    assert session.messages == []
+
+
+def test_explicit_skill_roots_replace_default_search_paths(tmp_path: Path) -> None:
+    _ = _write_runtime_skill(settings_module.root / "agent" / "skills", "默认用户目录")
+    _ = _write_runtime_skill(tmp_path / "skills", "默认项目目录")
+    custom = tmp_path / "custom"
+    file = _write_runtime_skill(custom, "显式目录")
+
+    session = CreateAgentSession(
+        Agent(FakeListChatModel(responses=["未使用"])), skill_roots=[custom]
+    )
+
+    assert len(session.messages) == 1
+    assert str(file.resolve()) in session.messages[0].text
+    assert "显式目录" in session.messages[0].text
+    assert "默认用户目录" not in session.messages[0].text
+    assert "默认项目目录" not in session.messages[0].text
+
+
+def test_invalid_skill_is_diagnosed_without_creating_an_empty_system_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    file = _write_runtime_skill(tmp_path / "bad")
+    _ = file.write_text("---\nname: review\n---\nPRIVATE_BODY\n", encoding="utf-8")
+
+    session = CreateAgentSession(
+        Agent(FakeListChatModel(responses=["未使用"])),
+        skill_roots=[tmp_path / "bad"],
+    )
+
+    assert session.messages == []
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert str(file) in output.err
+    assert "description" in output.err
+    assert "PRIVATE_BODY" not in output.err
+
+
+@pytest.mark.parametrize("with_checkpointer", [False, True])
+def test_system_message_and_skill_read_survive_multiple_turns_without_duplicates(
+    tmp_path: Path, with_checkpointer: bool
+) -> None:
+    root = tmp_path / "custom"
+    file = _write_runtime_skill(root)
+    content = file.read_text(encoding="utf-8") + "步骤\n" * 60 + "末尾指引\n"
+    _ = file.write_text(content, encoding="utf-8")
+    model = LocalToolModel(responses=[
+        AIMessage(content="", tool_calls=[{
+            "name": "read", "args": {"file": str(file), "limit": False},
+            "id": "skill-read",
+        }]),
+        AIMessage(content="已读取指引。"),
+        AIMessage(content="继续执行。"),
+    ])
+    agent = Agent(
+        model,
+        tools=[read],
+        checkpointer=InMemorySaver() if with_checkpointer else None,
+    )
+    session = CreateAgentSession(agent, system_prompt="基础规则", skill_roots=[root])
+    initial_prompt = session.messages[0].text
+
+    assert session.run("按指引检查") == "已读取指引。"
+    # 会话中不自动重扫或热重载；已加载的目录与正文继续留在历史里。
+    file.unlink()
+    assert session.run("继续") == "继续执行。"
+
+    assert [message.type for message in session.messages] == [
+        "system", "human", "ai", "tool", "ai", "human", "ai"
+    ]
+    assert session.messages[0].text == initial_prompt
+    assert session.messages[3].text == content
+    assert all(messages[0].text == initial_prompt for messages in model.seen_messages)
+    assert all(
+        sum(isinstance(message, SystemMessage) for message in messages) == 1
+        for messages in model.seen_messages
+    )
+    assert model.seen_messages[-1][:-1] == session.messages[:-2]
+    if with_checkpointer:
+        assert agent.agent.get_state(session.config).values["messages"] == session.messages
+
+
+def test_failed_turn_preserves_initialized_system_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = LocalToolModel(responses=[AIMessage(content="完成")])
+    session = CreateAgentSession(Agent(model), system_prompt="基础规则", skill_roots=[])
+    before = list(session.messages)
+
+    with pytest.raises(ValueError, match="message不能为空"):
+        _ = session.run(" ")
+    assert session.messages == before
+
+    monkeypatch.setattr(LocalToolModel, "_generate", Mock(side_effect=RuntimeError("失败")))
+    with pytest.raises(RuntimeError, match="失败"):
+        _ = session.run("执行")
+    assert session.messages == before
+
+
+@pytest.mark.parametrize("with_checkpointer", [False, True])
+def test_arun_executes_mixed_tools_and_preserves_multiturn_history(
+    with_checkpointer: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    @tool(response_format="content_and_artifact")
+    async def async_note(runtime: ToolRuntime) -> tuple[str, dict[str, str]]:
+        """异步读取本地说明并报告进度。"""
+        runtime.emit_output_delta("异步读取中")
+        return "异步说明", {"source": "本地假数据"}
+
+    @tool
+    def sync_note() -> str:
+        """同步读取本地说明。"""
+        return "同步说明"
+
+    model = LocalToolModel(responses=[
+        AIMessage(content="先读取说明。", tool_calls=[
+            {"name": "async_note", "args": {}, "id": "async-note"},
+            {"name": "sync_note", "args": {}, "id": "sync-note"},
+        ]),
+        AIMessage(
+            content=[{"type": "text", "text": "第一轮完成。"}],
+            response_metadata={"finish_reason": "stop"},
+        ),
+        AIMessage(content="记得之前的说明。"),
+    ])
+    agent = Agent(
+        model, tools=[async_note, sync_note],
+        checkpointer=InMemorySaver() if with_checkpointer else None,
+    )
+    session = CreateAgentSession(agent, system_prompt="基础规则", skill_roots=[])
+    thread_id = session.config.get("configurable", {})["thread_id"]
+
+    async def execute() -> None:
+        assert await session.arun("读取说明") == "第一轮完成。"
+        before = list(session.messages)
+        assert await session.arun("继续") == "记得之前的说明。"
+        assert model.seen_messages[-1][:-1] == before
+        if with_checkpointer:
+            state = await agent.agent.aget_state(session.config)
+            assert state.values["messages"] == session.messages
+
+    asyncio.run(execute())
+
+    assert [msg.type for msg in session.messages] == [
+        "system", "human", "ai", "tool", "tool", "ai", "human", "ai"
+    ]
+    results = {msg.tool_call_id: msg for msg in session.messages if isinstance(msg, ToolMessage)}
+    assert results["async-note"].text == "异步说明"
+    assert results["async-note"].artifact == {"source": "本地假数据"}
+    assert results["sync-note"].text == "同步说明"
+    assert session.messages[5].response_metadata["finish_reason"] == "stop"
+    assert session.config.get("configurable", {})["thread_id"] == thread_id
+    assert all(sum(isinstance(msg, SystemMessage) for msg in messages) == 1
+               for messages in model.seen_messages)
+    output = capsys.readouterr().out
+    for text in ("先读取说明。", "[工具开始] async_note", "异步读取中",
+                 "[工具完成] async_note", "[工具完成] sync_note", "第一轮完成。"):
+        assert output.count(text) == 1
+
+
+def test_arun_streams_text_once_and_preserves_original_input(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session = CreateAgentSession(Agent(FakeListChatModel(responses=["异步流式回答"])))
+
+    assert asyncio.run(session.arun("  你好\n")) == "异步流式回答"
+
+    assert session.messages[0].text == "  你好\n"
+    assert capsys.readouterr().out.count("异步流式回答") == 1
+
+
+@pytest.mark.parametrize("message", ["", " ", "\n\t"])
+def test_arun_rejects_blank_input_without_changing_history(message: str) -> None:
+    session = CreateAgentSession(
+        Agent(FakeListChatModel(responses=["未使用"])), system_prompt="基础规则"
+    )
+    before = list(session.messages)
+    with pytest.raises(ValueError, match="message不能为空"):
+        asyncio.run(session.arun(message))
+    assert session.messages == before
+
+
+def test_arun_failure_preserves_previous_history_and_original_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    session = CreateAgentSession(Agent(FakeListChatModel(responses=["已完成"])))
+    asyncio.run(session.arun("第一轮"))
+    before = list(session.messages)
+    error = RuntimeError("异步模型失败")
+
+    async def fail_stream(
+        self: FakeListChatModel, *args: object, **kwargs: object
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        yield ChatGenerationChunk(message=AIMessageChunk(content="部分回答"))
+        raise error
+
+    monkeypatch.setattr(FakeListChatModel, "_astream", fail_stream)
+
+    with pytest.raises(RuntimeError) as raised:
+        asyncio.run(session.arun("失败的一轮"))
+
+    assert raised.value is error
+    assert session.messages == before
+    assert "[执行失败] 异步模型失败" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("handled", [False, True])
+def test_arun_displays_tool_failures_without_reporting_success(
+    handled: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    error = RuntimeError("异步工具失败")
+
+    @tool
+    async def fail_note(runtime: ToolRuntime) -> ToolMessage:
+        """返回已处理错误或抛出原始错误。"""
+        if not handled:
+            raise error
+        return ToolMessage(
+            content="说明不存在", tool_call_id=runtime.tool_call_id or "", status="error"
+        )
+
+    model = LocalToolModel(responses=[
+        AIMessage(content="", tool_calls=[{"name": "fail_note", "args": {}, "id": "fail"}]),
+        AIMessage(content="请检查说明路径。"),
+    ])
+    session = CreateAgentSession(Agent(model, tools=[fail_note]))
+    if handled:
+        assert asyncio.run(session.arun("读取说明")) == "请检查说明路径。"
+        assert isinstance(session.messages[2], ToolMessage)
+        assert session.messages[2].status == "error"
+    else:
+        with pytest.raises(RuntimeError) as raised:
+            asyncio.run(session.arun("读取说明"))
+        assert raised.value is error
+        assert session.messages == []
+    output = capsys.readouterr().out
+    assert "[工具失败] fail_note" in output
+    assert "[工具完成] fail_note" not in output
+
+
+@pytest.mark.parametrize("result", [
+    None, {"messages": []},
+    {"messages": [ToolMessage(content="工具结果", tool_call_id="unfinished")]},
+    {"messages": [AIMessage(content="准备执行", tool_calls=[
+        {"name": "read", "args": {}, "id": "unfinished"}
+    ])]},
+])
+def test_arun_incomplete_final_state_does_not_commit_history(
+    monkeypatch: pytest.MonkeyPatch, result
+) -> None:
+    session = CreateAgentSession(Agent(FakeListChatModel(responses=["已完成"])))
+    asyncio.run(session.arun("第一轮"))
+    before = list(session.messages)
+    monkeypatch.setattr(session, "_adisplay_agent_run", AsyncMock(return_value=result))
+
+    with pytest.raises(RuntimeError, match="未返回最终"):
+        asyncio.run(session.arun("未完成的一轮"))
+
+    assert session.messages == before
+
+
+def test_arun_cancellation_cleans_up_tool_and_consumers_without_committing_history(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def execute() -> None:
+        started = asyncio.Event()
+        cleaned = asyncio.Event()
+
+        @tool
+        async def wait_note() -> str:
+            """等待取消，退出时清理本地任务。"""
+            started.set()
+            try:
+                await asyncio.Event().wait()
+                return "不应完成"
+            finally:
+                cleaned.set()
+
+        model = LocalToolModel(responses=[AIMessage(content="", tool_calls=[
+            {"name": "wait_note", "args": {}, "id": "wait"}
+        ])])
+        session = CreateAgentSession(Agent(model, tools=[wait_note]), system_prompt="基础规则")
+        before = list(session.messages)
+        existing = asyncio.all_tasks()
+        task = asyncio.create_task(session.arun("等待说明"))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        assert cleaned.is_set()
+        assert session.messages == before
+        assert not (asyncio.all_tasks() - existing)
+
+    asyncio.run(execute())
+    assert "[执行失败]" not in capsys.readouterr().out
+
+
+def test_sync_and_async_turns_share_history() -> None:
+    session = CreateAgentSession(Agent(FakeListChatModel(responses=["同步一", "异步二", "同步三"])))
+
+    assert session.run("一") == "同步一"
+    assert asyncio.run(session.arun("二")) == "异步二"
+    assert session.run("三") == "同步三"
+    assert [msg.text for msg in session.messages] == ["一", "同步一", "二", "异步二", "三", "同步三"]

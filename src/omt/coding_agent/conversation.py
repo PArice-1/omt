@@ -1,8 +1,7 @@
-"""同步/异步 Agent 会话：执行一轮对话、显示过程，并保留完整消息历史。"""
+"""入口无关的会话执行：消费模型/工具事件、校验终态并保留完整历史。"""
 
 import asyncio
-import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -21,11 +20,11 @@ from langchain_core.runnables import RunnableConfig
 from omt.agent.agent import Agent
 
 from . import settings
+from .events import EventHandler, RunEvent
 from .skills import discover_skills, render_skills_prompt
-from .events import RunEvent, format_output as _format_output, print_event
 
 
-class CreateAgentSession:
+class Conversation:
     """保存一个会话的完整内存历史，供同一实例的后续调用继续使用。
 
     每轮提交已有历史和新用户消息，成功后以最终状态中的 messages 替换历史。
@@ -36,8 +35,8 @@ class CreateAgentSession:
     初始化时将可选提示词文本与 Skills 目录合并为首条 SystemMessage，空内容不插入。
     默认扫描用户和项目 Skills；传入 skill_roots=[] 可关闭扫描。
     同一份基础提示词不要同时传给 Agent.system_prompt 和本会话，避免重复发送。
-    switch_session() 可从检查点替换为另一段已完成会话；所有操作仅支持顺序调用。
-    event_handler 默认使用终端渲染；传入 None 静默执行，传入函数接收结构化过程事件。
+    load_history() 可从检查点替换为另一段已完成会话；所有操作仅支持顺序调用。
+    默认不展示过程，event_handler 可接收事件；终端渲染属于 cli.terminal。
     """
 
     def __init__(
@@ -47,9 +46,15 @@ class CreateAgentSession:
         *,
         system_prompt: str = "",
         skill_roots: Sequence[Path] | None = None,
-        event_handler: Callable[[RunEvent], None] | None = print_event,
+        event_handler: EventHandler | None = None,
     ) -> None:
-        self._event_handler: Callable[[RunEvent], None] | None = event_handler
+        """agent 是已组装的执行器，config 的 thread_id 决定检查点归属。
+
+        system_prompt 是新会话的提示词正文，不是文件路径；skill_roots=None
+        扫描默认目录，[] 关闭发现。event_handler 是同步快速回调，None 静默；
+        它只接收过程，不得从片段重建历史，最终历史以图终态为准。
+        """
+        self._event_handler: EventHandler | None = event_handler
         self.agent: Agent = agent
         self.messages: list[AnyMessage] = self._prepare_messages(system_prompt, skill_roots)
         # 复制需要修改的两层字典，避免向调用者的原始配置写入 thread_id。
@@ -73,7 +78,7 @@ class CreateAgentSession:
             ]
         result = discover_skills(skill_roots)
         for diagnostic in result.diagnostics:
-            print(f"[Skills] {diagnostic}", file=sys.stderr)
+            self._emit(RunEvent("skills.diagnostic", text=diagnostic))
 
         skills_prompt = render_skills_prompt(result.skills)
         parts = [part for part in (system_prompt, skills_prompt) if part.strip()]
@@ -85,11 +90,11 @@ class CreateAgentSession:
         if self._event_handler is not None:
             self._event_handler(event)
 
-    def _display_agent_run(
+    def _execute(
         self,
         messages: list[AnyMessage],
     ) -> dict[str, Any] | None:
-        """显示各次模型调用及工具执行，最终返回图状态而非拼接后的文本。"""
+        """消费各次模型调用及工具执行，最终返回图状态而非拼接后的文本。"""
         input_state: InputAgentState = {"messages": [*messages]}
         with self.agent.stream_event(
             input=input_state,
@@ -117,11 +122,11 @@ class CreateAgentSession:
                     for delta in item.output_deltas:
                         self._emit(RunEvent("tool.delta", tool_name=item.tool_name, data=delta))
 
-                    self._display_tool_result(item.tool_name, item.output, item.error)
+                    self._emit_tool_result(item.tool_name, item.output, item.error)
 
             return stream.output
 
-    async def _adisplay_agent_run(
+    async def _aexecute(
         self,
         messages: list[AnyMessage],
     ) -> dict[str, Any] | None:
@@ -135,7 +140,7 @@ class CreateAgentSession:
             model_calls = aiter(stream.messages)
             tool_calls = aiter(stream.tool_calls)
 
-            async def display_messages() -> None:
+            async def consume_messages() -> None:
                 async for model_stream in model_calls:
                     has_text = False
                     async for text in model_stream.text:
@@ -148,16 +153,16 @@ class CreateAgentSession:
                     if has_text:
                         self._emit(RunEvent("assistant.completed"))
 
-            async def display_tools() -> None:
+            async def consume_tools() -> None:
                 async for item in tool_calls:
                     self._emit(RunEvent("tool.started", tool_name=item.tool_name, data=item.input))
                     async for delta in item.output_deltas:
                         self._emit(RunEvent("tool.delta", tool_name=item.tool_name, data=delta))
-                    self._display_tool_result(item.tool_name, item.output, item.error)
+                    self._emit_tool_result(item.tool_name, item.output, item.error)
 
             tasks = [
-                asyncio.create_task(display_messages()),
-                asyncio.create_task(display_tools()),
+                asyncio.create_task(consume_messages()),
+                asyncio.create_task(consume_tools()),
             ]
             try:
                 # 两个通道都读完再抛原异常，避免另一个通道的工具失败通知被取消。
@@ -169,17 +174,17 @@ class CreateAgentSession:
             finally:
                 for task in tasks:
                     if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                        _ = task.cancel()
+                _ = await asyncio.gather(*tasks, return_exceptions=True)
 
-    def _display_tool_result(
+    def _emit_tool_result(
         self, tool_name: str, output: object, error: str | None
     ) -> None:
-        """同步和异步路径使用相同的工具成功/失败展示规则。"""
+        """同步和异步路径使用相同的工具成功/失败事件。"""
         if error is not None:
             self._emit(RunEvent("tool.failed", tool_name=tool_name, text=error))
         elif isinstance(output, ToolMessage) and output.status == "error":
-            self._emit(RunEvent("tool.failed", tool_name=tool_name, text=_format_output(output)))
+            self._emit(RunEvent("tool.failed", tool_name=tool_name, text=output.text, data=output))
         else:
             self._emit(RunEvent("tool.completed", tool_name=tool_name, data=output))
 
@@ -206,14 +211,14 @@ class CreateAgentSession:
             raise ValueError("message不能为空")
         input_messages = [*self.messages, HumanMessage(content=message)]
         try:
-            result = await self._adisplay_agent_run(input_messages)
+            result = await self._aexecute(input_messages)
             return self._commit_result(result)
         except Exception as exc:
             self._emit(RunEvent("run.failed", text=str(exc)))
             raise
 
     def run(self, message: str) -> str:
-        """同步执行一轮：实时显示过程，保存完整历史，只返回最后的模型回答文本。
+        """同步执行一轮：发送过程事件，保存完整历史，只返回最后的模型回答文本。
 
         失败时保留上一轮已完成的历史并继续抛出原始异常；不会撤销工具副作用。
         """
@@ -222,39 +227,14 @@ class CreateAgentSession:
         # 先准备输入，不提前把尚未完成的用户回合写入历史。
         input_messages = [*self.messages, HumanMessage(content=message)]
         try:
-            result = self._display_agent_run(input_messages)
+            result = self._execute(input_messages)
             return self._commit_result(result)
         except Exception as exc:
             self._emit(RunEvent("run.failed", text=str(exc)))
             raise
 
-    def display_history(self) -> None:
-        """按消息顺序展示当前历史，不输出系统提示词、artifact 或模型元数据。"""
-        messages = [message for message in self.messages if not isinstance(message, SystemMessage)]
-        print("\n[对话历史]", flush=True)
-        if not messages:
-            print("暂无对话历史。", flush=True)
-            return
-
-        for message in messages:
-            if isinstance(message, AIMessage):
-                if message.text:
-                    print(f"[助手] {message.text}", flush=True)
-                for call in message.tool_calls:
-                    print(f"[工具调用] {call['name']}", flush=True)
-                    print(f"  参数：{_format_output(call['args'])}", flush=True)
-            elif isinstance(message, ToolMessage):
-                label = "工具失败" if message.status == "error" else "工具结果"
-                name = message.name or message.tool_call_id
-                print(f"[{label}] {name}\n{_format_output(message)}", flush=True)
-            else:
-                label = "用户" if isinstance(message, HumanMessage) else message.type
-                print(f"[{label}] {_format_output(message)}", flush=True)
-
-    async def switch_session(self, thread_id: str, *, display: bool = True) -> None:
-        """加载目标会话的最新根图检查点，校验后替换历史和配置。
-
-        display 默认 True 保留 CLI 展示；HTTP 传 False，不输出历史正文。
+    async def load_history(self, thread_id: str) -> None:
+        """按 thread_id 加载最新已完成检查点；只加载数据，不打印历史。
 
         不执行模型或工具，不重新扫描 Skills，不读写会话索引。
         目标缺失、执行未完成、查询失败或被取消时保留当前会话；异常向外传播。
@@ -282,9 +262,7 @@ class CreateAgentSession:
 
         # 查询和校验都成功后才更新；保留原始消息及其工具调用、附加数据和 ID。
         self.messages, self.config = messages, config
-        if display:
-            self.display_history()
 
     def get_config(self) -> RunnableConfig:
-        """返回当前运行配置；CLI 应在组装时注入 ID，不依赖反向读取来建索引。"""
+        """返回当前运行配置；应用入口由 Manager 注入 ID，不反向读取来建索引。"""
         return self.config

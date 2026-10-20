@@ -1,17 +1,25 @@
 """CLI 与 HTTP 共用的模型、工具和 Agent 组装；不启动输入循环。"""
 
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.sessions import Connection
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from omt.agent.agent import Agent
 from omt.ai.model import Model
 from omt.ai.models_manager import models as model_initializers
 
+from . import settings as settings_module
+from .configuration import SessionSettings
 from .mcp import get_tools
+from .prompts import load_system_prompt
+from .session_manager import SessionManager
 from .settings import Settings, load_auth, load_model_store
+from .store import SessionStore
 from .tools_manager import load_tools
 
 
@@ -63,3 +71,36 @@ async def build_agent(
         tools=[*load_tools(), *extra_tools, *mcp_tools],
         checkpointer=checkpointer,
     )
+
+
+@asynccontextmanager
+async def open_session_manager(options: SessionSettings) -> AsyncGenerator[SessionManager]:
+    """为一个 CLI/API 生命周期组装 Manager，并先清理任务再关闭检查点连接。
+
+    options 的目录必须等于进程 cwd；数据库及 sessions 表必须预建。
+    本函数不切换目录、不要求 HTTP 令牌，也不创建终端或监听网络端口。
+    """
+    if options.workspace_path != Path.cwd().resolve() or not options.workspace_path.is_dir():
+        raise ValueError("工作目录必须与启动进程的当前目录一致，请先切换目录再启动")
+    if not options.db_path.is_file():
+        raise FileNotFoundError("会话数据库不存在，请先创建数据库及 sessions 表")
+    store = SessionStore(options.db_path)
+    _ = await store.list_sessions(options.workspace_path)
+    system_prompt = load_system_prompt()
+    model = build_model(settings_module.load_settings())
+    roots = options.skill_roots
+    if roots is None:
+        roots = [settings_module.root / "agent" / "skills", options.workspace_path / "skills"]
+    async with AsyncSqliteSaver.from_conn_string(str(options.db_path)) as saver:
+        agent = await build_agent(
+            model, checkpointer=saver,
+            servers={name: server.connection() for name, server in options.mcp_servers.items()},
+        )
+        manager = SessionManager(
+            agent, store, workspace_path=options.workspace_path, system_prompt=system_prompt,
+            skill_roots=roots, max_concurrent_runs=options.max_concurrent_runs,
+        )
+        try:
+            yield manager
+        finally:
+            await manager.aclose()

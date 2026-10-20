@@ -5,7 +5,7 @@
 - 源码：[store.py](../../src/omt/coding_agent/store.py)。
 - 测试：[test_store.py](../../tests/coding_agent/test_store.py)。
 - 保证 SessionStore 只读写调用方指定的已有数据库和 sessions 表，避免路径错误时创建空库、重复 ID 覆盖旧会话，以及按目录列出时混入其他项目。
-- 本模块保存会话元数据，不保存消息、执行图状态或管理 Checkpointer 的内部表。CLI /resume 通过本模块查询列表和选中记录，再调用 Runtime 恢复，交互测试见 [resume.md](resume.md)。
+- 本模块保存会话元数据，不保存消息、执行图状态或管理 Checkpointer 的内部表。CLI /resume 通过 Manager 协调本模块查询和 Conversation 历史加载，交互测试见 [resume.md](resume.md)。
 
 ## 接口和预建表约定
 
@@ -26,7 +26,7 @@ CREATE INDEX idx_sessions_workspace ON sessions(workspace_path, updated_at);
 
 thread_id 由调用方提供，作为不透明标识保留原值，不强制 UUID 格式；插入及更新时间时拒绝空串和全空白。数据库路径与工作目录均执行 expanduser 和 resolve；列表精确匹配规范化后的目录，不自动归并子目录或查找 Git 根目录。外部直接插入记录时也必须遵守同样的路径规范和一致的时间格式。
 
-插入时 created_at、updated_at 使用表中的默认值，查询不重建或更新时间。update_session_updated_at(thread_id) 只把目标记录的 updated_at 改为当前 UTC 时间，提交后返回原样写入的时间字符串，不修改 created_at、标题、目录、ID 或其他会话；记录不存在时抛 ValueError，不创建记录。时间格式为 YYYY-MM-DD HH:MM:SS，秒精度，同一秒内多次更新可能显示相同值。CLI 成功恢复后主动调用；当前不提供修改标题或删除方法。排序依次为 updated_at 降序、created_at 降序、thread_id 升序。
+插入时 created_at、updated_at 使用表中的默认值，查询不重建或更新时间。update_session_updated_at(thread_id) 只把目标记录的 updated_at 改为当前 UTC 时间，提交后返回原样写入的时间字符串，不修改 created_at、标题、目录、ID 或其他会话；记录不存在时抛 ValueError，不创建记录。时间格式为 YYYY-MM-DD HH:MM:SS，秒精度，同一秒内多次更新可能显示相同值。Manager 在显式激活和成功回合后调用，CLI/HTTP 共用；只读取列表或历史不刷新。当前不提供修改标题或删除方法。排序依次为 updated_at 降序、created_at 降序、thread_id 升序。
 
 ## 场景
 

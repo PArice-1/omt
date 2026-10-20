@@ -4,20 +4,16 @@ import hmac
 import sqlite3
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from starlette.exceptions import HTTPException
 
-from omt.coding_agent import bootstrap, settings as agent_settings
-from omt.coding_agent.prompts import load_system_prompt
+from omt.coding_agent import bootstrap
 from omt.coding_agent.session_manager import SessionError, SessionManager
-from omt.coding_agent.store import SessionStore
 
 from .routes import session_routes
 from .settings import ApiSettings
@@ -25,27 +21,8 @@ from .settings import ApiSettings
 
 @asynccontextmanager
 async def open_manager(options: ApiSettings) -> AsyncGenerator[SessionManager]:
-    store = SessionStore(options.db_path)
-    # 先确认索引表可读，缺库/缺表时不初始化模型或发现 MCP。
-    _ = await store.list_sessions(options.workspace_path)
-    system_prompt = load_system_prompt()
-    model = bootstrap.build_model(agent_settings.load_settings())
-    roots = options.skill_roots
-    if roots is None:
-        roots = [agent_settings.root / "agent" / "skills", options.workspace_path / "skills"]
-    async with AsyncSqliteSaver.from_conn_string(str(options.db_path)) as saver:
-        agent = await bootstrap.build_agent(
-            model, checkpointer=saver,
-            servers={name: server.connection() for name, server in options.mcp_servers.items()},
-        )
-        manager = SessionManager(
-            agent, store, workspace_path=options.workspace_path, system_prompt=system_prompt,
-            skill_roots=roots, max_concurrent_runs=options.max_concurrent_runs,
-        )
-        try:
-            yield manager
-        finally:
-            await manager.aclose()
+    async with bootstrap.open_session_manager(options) as manager:
+        yield manager
 
 
 ManagerFactory = Callable[[ApiSettings], AbstractAsyncContextManager[SessionManager]]
@@ -70,11 +47,6 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         nonlocal manager
-        # 工具依赖进程 cwd。不能在请求中 chdir，也不能宣称 workspace 字段是沙箱。
-        if options.workspace_path != Path.cwd().resolve() or not options.workspace_path.is_dir():
-            raise ValueError("HTTP 工作目录必须与启动进程的当前目录一致，请先切换目录再启动")
-        if not options.db_path.is_file():
-            raise FileNotFoundError("请先创建 HTTP 会话数据库及 sessions 表")
         try:
             async with manager_factory(options) as active:
                 manager = active

@@ -4,7 +4,7 @@
 
 - 源码：[api/](../../src/omt/api/)、[session_manager.py](../../src/omt/coding_agent/session_manager.py)、[bootstrap.py](../../src/omt/coding_agent/bootstrap.py)。
 - 测试：[test_api.py](../../tests/api/test_api.py)。
-- 验证 HTTP Interface 的可观察响应、真实 SQLite 历史恢复、会话隔离与失败清理；不以 mock 写入或内部方法调用次数替代执行结果。CLI 兼容性另由[原有组装测试](session-and-config.md)验证，事件与静默执行见 [Runtime 测试](runtime.md)。
+- 验证 HTTP Interface 的可观察响应、真实 SQLite 历史恢复、会话隔离与失败清理；不以 mock 写入或内部方法调用次数替代执行结果。CLI 入口见 [CLI 测试](cli.md)，共用组装见[配置测试](session-and-config.md)，事件与静默执行见 [Conversation 测试](conversation.md)。
 
 ## 场景
 
@@ -24,19 +24,25 @@
 
 同会话/全局并发通过公开 Manager Interface 和 asyncio.Event 验证，避免用线程睡眠猜测请求时序。HTTP 层的 409 在失败重试及不完整检查点场景验证；容量错误的映射为固定 429，尚未通过并发真实网络请求验证。
 
+## CLI/HTTP 共用回归
+
+test_cli_and_http_share_one_manager_without_leaking_terminal_output 使用同一事件循环和 Manager：HTTP 创建空会话，CLI /resume 后执行一轮，再由 HTTP 追加。预期同一 ID 的用户/助手四条消息完整且无重复；CLI 回答只打印一次，后续 HTTP 回答没有终端输出。它验证单轮事件回调隔离与共用历史规则，不验证两个独立进程共享锁。
+
+共用配置类型从 api.settings 移至 coding_agent.configuration；ApiSettings 及公开 HTTP 字段不变。默认 lifespan 现在委托 bootstrap.open_session_manager，原组装测试仍验证预建库、MCP 类型、工具、系统提示词、关闭后拒绝操作等可观察行为。
+
 ## 隔离方式
 
 - 模块级自动 fixture 将 cwd、settings.root 指向 tmp_path，前后清理模型设置缓存，移除本组使用的宿主配置环境变量。所有数据库均由测试显式建表，不读取本机配置或凭据。
-- HTTP 使用 TestClient，不监听端口；LangGraph 图、Runtime、SessionStore、AsyncSqliteSaver 使用真实实现。注入的 LocalModel 只产生本地预设消息，工具只返回测试数据或等待本地 Event，不运行 Bash、修改项目文件或访问网络。
-- 重启场景关闭原应用/Saver，再创建新应用与连接，不复用内存 Runtime。正常测试不 mock SQLite。只有更新时间写入失败和默认依赖组装处使用限定替身。
+- HTTP 使用 TestClient，不监听端口；LangGraph 图、Conversation、SessionStore、AsyncSqliteSaver 使用真实实现。注入的 LocalModel 只产生本地预设消息，工具只返回测试数据或等待本地 Event，不运行 Bash、修改项目文件或访问网络。
+- 重启场景关闭原应用/Saver，再创建新应用与连接，不复用内存 Conversation。正常测试不 mock SQLite。只有更新时间写入失败和默认依赖组装处使用限定替身。
 - 取消型用例有等待超时和 finally 清理，退出 Manager 后再关闭 Saver；不保留测试工具任务。MCP 发现一律不启动真实服务，默认 lifespan 用 AsyncMock 返回空工具列表。
 
 ## 执行
 
 ```bash
 uv run pytest -q tests/api/test_api.py --tb=no
-uv run pytest -q tests/api/test_api.py tests/test_runtime.py tests/test_runtime_switch.py tests/coding_agent/test_session.py tests/coding_agent/test_resume.py --tb=no
-basedpyright --pythonpath .venv/bin/python src/omt/api src/omt/coding_agent/bootstrap.py src/omt/coding_agent/events.py src/omt/coding_agent/session_manager.py src/omt/coding_agent/runtime.py src/omt/coding_agent/session.py src/omt/coding_agent/mcp.py tests/api/test_api.py tests/test_runtime.py
+uv run pytest -q tests/api tests/cli tests/coding_agent/test_conversation.py tests/coding_agent/test_conversation_history.py tests/coding_agent/test_bootstrap.py --tb=no
+basedpyright --pythonpath .venv/bin/python src/omt/api src/omt/cli src/omt/coding_agent/bootstrap.py src/omt/coding_agent/configuration.py src/omt/coding_agent/events.py src/omt/coding_agent/session_manager.py src/omt/coding_agent/conversation.py tests/api/test_api.py
 ```
 
 ## 覆盖限制

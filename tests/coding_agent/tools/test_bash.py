@@ -16,7 +16,8 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import ValidationError
 
 from omt.agent.agent import Agent
-from omt.coding_agent.runtime import CreateAgentSession
+from omt.coding_agent.conversation import Conversation
+from omt.cli.terminal import print_event
 from omt.coding_agent.tools.bash import bash
 from omt.coding_agent.tools_manager import load_tools
 
@@ -199,7 +200,7 @@ def test_registered_bash_runs_in_agent_and_preserves_tool_message(tmp_path: Path
         }]),
         AIMessage(content="命令已完成。"),
     ])
-    session = CreateAgentSession(Agent(model, tools=load_tools()))
+    session = Conversation(Agent(model, tools=load_tools()), event_handler=print_event)
 
     reply = session.run("执行本地测试命令")
 

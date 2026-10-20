@@ -2,7 +2,8 @@
 
 import asyncio
 import sqlite3
-from contextlib import closing
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, closing
 from importlib import import_module
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
@@ -12,11 +13,12 @@ import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from omt.agent.agent import Agent
-from omt.coding_agent.session import session
+from omt.cli.app import main as session
+from omt.cli.settings import CliSettings
+from omt.coding_agent.session_manager import SessionManager
 from omt.coding_agent.store import SessionRecord, SessionStore
 
 
@@ -35,17 +37,22 @@ def resume_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         """)
         connection.commit()
 
-    async def make_agent(
-        _model: object, *, checkpointer: BaseCheckpointSaver[str] | None = None,
-    ) -> Agent:
-        return Agent(FakeListChatModel(responses=["新回答"]), checkpointer=checkpointer)
+    @asynccontextmanager
+    async def factory(options: CliSettings) -> AsyncGenerator[SessionManager]:
+        async with AsyncSqliteSaver.from_conn_string(str(path)) as saver:
+            manager = SessionManager(
+                Agent(FakeListChatModel(responses=["新回答"]), checkpointer=saver),
+                SessionStore(path), workspace_path=options.workspace_path,
+                system_prompt="本地规则", skill_roots=[],
+            )
+            try:
+                yield manager
+            finally:
+                await manager.aclose()
 
-    module = import_module("omt.coding_agent.session")
-    monkeypatch.setattr(module, "db_path", path)
-    monkeypatch.setattr(module, "load_settings", Mock(return_value=None))
-    monkeypatch.setattr(module, "load_system_prompt", Mock(return_value="本地规则"))
-    monkeypatch.setattr(module, "_get_model", Mock(return_value=None))
-    monkeypatch.setattr(module, "_get_agent", make_agent)
+    module = import_module("omt.cli.app")
+    monkeypatch.setenv("OMT_CLI_DB_PATH", str(path))
+    monkeypatch.setattr(module, "open_manager", factory)
     monkeypatch.setattr(module, "PromptSession", Mock())
     return path
 
@@ -78,8 +85,8 @@ async def _seed_session(
 
 
 def _inputs(monkeypatch: pytest.MonkeyPatch, values: list[str]) -> None:
-    module = import_module("omt.coding_agent.session")
-    monkeypatch.setattr(module, "_aget_user_input", AsyncMock(side_effect=values))
+    module = import_module("omt.cli.app")
+    monkeypatch.setattr(module, "read_input", AsyncMock(side_effect=values))
 
 
 def _rows(output: str) -> list[list[str]]:
@@ -254,7 +261,7 @@ def test_resume_revalidates_selected_record_before_switching(
                         await connection.commit()
         return value
 
-    monkeypatch.setattr(import_module("omt.coding_agent.session"), "_aget_user_input", read_input)
+    monkeypatch.setattr(import_module("omt.cli.app"), "read_input", read_input)
 
     session()
 
@@ -268,7 +275,15 @@ def test_resume_failed_switch_keeps_current_id_and_registration_state(
     resume_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    asyncio.run(_seed_session(resume_db, tmp_path, "missing-state", "只有索引", with_checkpoint=False))
+    async def incomplete() -> None:
+        await _seed_session(resume_db, tmp_path, "missing-state", "未完成历史", with_checkpoint=False)
+        async with AsyncSqliteSaver.from_conn_string(str(resume_db)) as saver:
+            agent = Agent(FakeListChatModel(responses=["不应调用"]), checkpointer=saver)
+            _ = await agent.agent.aupdate_state(
+                {"configurable": {"thread_id": "missing-state"}},
+                {"messages": [HumanMessage(content="尚未完成")]},
+            )
+    asyncio.run(incomplete())
     _inputs(monkeypatch, ["/resume", "/resume 1", "新问题", "/exit"])
 
     session()
@@ -297,7 +312,8 @@ def test_resume_database_errors_are_reported_without_execution(
     session()
 
     output = capsys.readouterr().out
-    assert "测试查询失败" in output
+    assert "失败" in output
+    assert "测试查询失败" not in output
     assert "[对话历史]" not in output
     assert "新回答" not in output
     with closing(sqlite3.connect(resume_db)) as connection:
@@ -334,8 +350,8 @@ def test_resume_timestamp_update_failure_keeps_restored_session_usable(
 
     output = capsys.readouterr().out
     assert "[修改时间更新失败]" in output
-    assert "测试更新时间失败" in output
-    assert "会话已切换" in output
+    assert "测试更新时间失败" not in output
+    assert "会话已恢复" in output
     assert "[会话恢复失败]" not in output
     records = asyncio.run(SessionStore(resume_db).list_sessions(tmp_path))
     assert [record.thread_id for record in records] == ["target"]
@@ -362,7 +378,7 @@ def test_resume_uses_displayed_number_mapping_and_invalidates_it_after_switch(
             inserted = True
         return value
 
-    monkeypatch.setattr(import_module("omt.coding_agent.session"), "_aget_user_input", read_input)
+    monkeypatch.setattr(import_module("omt.cli.app"), "read_input", read_input)
 
     session()
 
@@ -412,7 +428,8 @@ def test_input_dispatch_clears_previous_numbers_when_list_refresh_fails(
     session()
 
     output = capsys.readouterr().out
-    assert "测试刷新失败" in output
+    assert "[会话查询失败]" in output
+    assert "测试刷新失败" not in output
     assert "编号无效" in output
     assert "[对话历史]" not in output
     assert len(asyncio.run(SessionStore(resume_db).list_sessions(tmp_path))) == 1

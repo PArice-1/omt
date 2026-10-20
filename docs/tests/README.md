@@ -8,11 +8,12 @@
 | --- | --- |
 | [模型初始化](ai-models.md) | [test_ai.py](../../tests/ai/test_ai.py)、[test_models_manager.py](../../tests/ai/test_models_manager.py)、[test_deepseek.py](../../tests/ai/test_deepseek.py) |
 | [Agent 与同步/异步 v3 流](agent.md) | [test_agent.py](../../tests/test_agent.py)、[test_agent_stream.py](../../tests/test_agent_stream.py)、[test_agent_async.py](../../tests/test_agent_async.py) |
-| [Runtime、历史与会话 ID](runtime.md) | [test_runtime.py](../../tests/test_runtime.py)、[test_runtime_switch.py](../../tests/test_runtime_switch.py) |
+| [Conversation、历史与会话 ID](conversation.md) | [test_conversation.py](../../tests/coding_agent/test_conversation.py)、[test_conversation_history.py](../../tests/coding_agent/test_conversation_history.py) |
+| [CLI 入口、终端与生命周期](cli.md) | [test_app.py](../../tests/cli/test_app.py)、[test_terminal.py](../../tests/cli/test_terminal.py)、[test_lifecycle.py](../../tests/cli/test_lifecycle.py) |
 | [HTTP 与会话管理](api.md) | [test_api.py](../../tests/api/test_api.py) |
 | [SQLite 会话索引](store.md) | [test_store.py](../../tests/coding_agent/test_store.py) |
-| [CLI /resume 会话选择与恢复](resume.md) | [test_resume.py](../../tests/coding_agent/test_resume.py) |
-| [CLI Session 与配置](session-and-config.md) | [test_session.py](../../tests/coding_agent/test_session.py)、[test_settings.py](../../tests/coding_agent/test_settings.py)、[test_configuration_files.py](../../tests/coding_agent/test_configuration_files.py) |
+| [CLI /resume 会话选择与恢复](resume.md) | [test_resume.py](../../tests/cli/test_resume.py) |
+| [模型配置与共用组装](session-and-config.md) | [test_bootstrap.py](../../tests/coding_agent/test_bootstrap.py)、[test_settings.py](../../tests/coding_agent/test_settings.py)、[test_configuration_files.py](../../tests/coding_agent/test_configuration_files.py) |
 | [工具、注册与文件查找](tools.md) | [test_tools_manager.py](../../tests/coding_agent/test_tools_manager.py)、[test_read.py](../../tests/coding_agent/tools/test_read.py)、[test_edit.py](../../tests/coding_agent/tools/test_edit.py)、[test_write.py](../../tests/coding_agent/tools/test_write.py)、[test_bash.py](../../tests/coding_agent/tools/test_bash.py)、[test_find_files.py](../../tests/coding_agent/utils/test_find_files.py) |
 | [内置系统提示词](prompts.md) | [test_prompts.py](../../tests/coding_agent/test_prompts.py) |
 | [Skills 发现与提示词](skills.md) | [test_skills.py](../../tests/coding_agent/test_skills.py) |
@@ -77,9 +78,9 @@ uv run pytest -q --tb=no
 
 确认失败输出不含敏感数据后，再对具体用例使用 `--tb=short` 排查。不要依赖隐藏堆栈来替代测试隔离。
 
-- [coding_agent/conftest.py](../../tests/coding_agent/conftest.py) 的自动 fixture 将 `settings.root` 和 cwd 指向每例的 `tmp_path`，并在前后清空设置缓存。配置测试不能只 `chdir`：实际配置目录可能固定在用户 HOME。Runtime 测试也同时隔离默认用户和项目 Skills。
+- [coding_agent/conftest.py](../../tests/coding_agent/conftest.py) 的自动 fixture 将 `settings.root` 和 cwd 指向每例的 `tmp_path`，并在前后清空设置缓存。配置测试不能只 `chdir`：实际配置目录可能固定在用户 HOME。Conversation 测试也同时隔离默认用户和项目 Skills。CLI 测试的 [cli/conftest.py](../../tests/cli/conftest.py) 额外清理入口环境变量，并显式关闭默认本机 MCP。
 - [ai/conftest.py](../../tests/ai/conftest.py) 在 SDK 初始化处返回本地假模型，保留 Model 到提供商初始化函数的内部调用链。
-- 顶层 Agent/Runtime 测试直接注入假模型，不需要读取配置或真实认证；Runtime 测试用局部自动 fixture 隔离 settings.root 与 cwd，避免扫描真实 Skills。
+- 顶层 Agent 和 coding_agent 下的 Conversation 测试直接注入假模型，不读取配置或真实认证；Conversation 测试另用局部自动 fixture 隔离 settings.root 与 cwd，避免扫描真实 Skills。
 - 文件操作只使用临时目录。Bash 测试只执行本地假数据命令，并清理测试启动的进程；POSIX/Bash 或 FIFO 不可用时允许有明确原因的跳过。
 - 真实模型调用、真实账户 OAuth、远程服务和用户终端的人工验证不属于默认测试通过的含义；需要额外授权并与离线结果分开报告。
 

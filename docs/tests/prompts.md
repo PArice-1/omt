@@ -5,9 +5,9 @@
 - 提示词：[system.md](../../src/omt/coding_agent/prompts/system.md)。
 - 加载源码：[prompts/__init__.py](../../src/omt/coding_agent/prompts/__init__.py)。
 - 测试：[test_prompts.py](../../tests/coding_agent/test_prompts.py)。
-- CLI 接入：[session.py](../../src/omt/coding_agent/session.py)；集成验证见 [Session 与配置测试](session-and-config.md)。
+- CLI/HTTP 共用接入：[bootstrap.py](../../src/omt/coding_agent/bootstrap.py)；集成验证见 [CLI 测试](cli.md)与 [HTTP 测试](api.md)。
 
-基础提示词以 Markdown 包资源保存，`load_system_prompt() -> str` 读取 UTF-8 文本；CLI 在初始化模型之前加载，然后传给 `CreateAgentSession(system_prompt=...)`。不在 Runtime 中内嵌大段文本，也不在 Agent 和 Runtime 中重复配置。
+基础提示词以 Markdown 包资源保存，`load_system_prompt() -> str` 读取 UTF-8 文本；bootstrap 在初始化模型之前加载，由 Manager 仅向空会话的 `Conversation(system_prompt=...)` 传递。不在执行核心内嵌大段文本，不在 Agent 和 Conversation 中重复配置；恢复已有历史不覆盖原规则。
 
 ## 场景
 
@@ -29,9 +29,9 @@
 ## 执行
 
 ```bash
-uv run pytest -q tests/coding_agent/test_prompts.py tests/coding_agent/test_session.py tests/test_runtime.py --tb=no
+uv run pytest -q tests/coding_agent/test_prompts.py tests/cli/test_lifecycle.py tests/coding_agent/test_conversation.py --tb=no
 uv run pytest -q --tb=no
-basedpyright --pythonpath .venv/bin/python src/omt/coding_agent/prompts/__init__.py src/omt/coding_agent/session.py tests/coding_agent/test_prompts.py tests/coding_agent/test_session.py
+basedpyright --pythonpath .venv/bin/python src/omt/coding_agent/prompts/__init__.py src/omt/coding_agent/bootstrap.py tests/coding_agent/test_prompts.py tests/cli/test_lifecycle.py
 git diff --check
 ```
 

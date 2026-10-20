@@ -39,7 +39,7 @@
 | 异步检查点 | 内存检查点、模型前中断；None 恢复后继续第二轮 | 异步流恢复正常；ainvoke 保留两轮完整历史 | test_async_checkpointer_interrupt_resume_and_second_turn |
 | 非 v3 请求 | v1/v2/未知协议 | 获取流前拒绝，不触发底层执行 | test_astream_event_rejects_other_protocols |
 
-异步用例使用标准库 asyncio.run 管理每例的事件循环，不新增 pytest 异步插件；回合取消和正在执行的工具清理另见 [Runtime 测试](runtime.md)。
+异步用例使用标准库 asyncio.run 管理每例的事件循环，不新增 pytest 异步插件；回合取消和正在执行的工具清理另见 [Conversation 测试](conversation.md)。
 
 ## 隔离方式
 

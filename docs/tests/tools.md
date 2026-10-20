@@ -44,7 +44,7 @@
 | 编码与语法错误 | 非 UTF-8 输出；不完整 Shell 语法 | 非法字节替换而不抛解码异常；语法错误以退出码与 stderr 返回 | non_utf8_output、shell_syntax_error 用例 |
 | 异常时回收 | 输出读取被模拟为 KeyboardInterrupt 或 RuntimeError | 原异常传播，直接子进程已回收 | test_interrupted_output_capture_terminates_the_process |
 | 工具协议 | 用带 tool_call ID 的调用封套执行本地 printf | 形成 ToolMessage，调用 ID 与结构化结果正确 | test_tool_call_returns_tool_message_with_structured_result |
-| Agent 集成 | 假模型请求已注册 Bash，再返回总结 | 真实执行本地命令；Session 保存完整工具回合，终端显示工具开始/结果/完成 | test_registered_bash_runs_in_agent_and_preserves_tool_message |
+| Agent 集成 | 假模型请求已注册 Bash，再返回总结 | 真实执行本地命令；Conversation 保存完整工具回合，显式传 cli.terminal.print_event 后显示工具开始/结果/完成 | test_registered_bash_runs_in_agent_and_preserves_tool_message |
 
 只在 POSIX 且 Bash 可用时执行该测试文件。命令仅操作测试数据，不访问网络或真实凭据。
 
@@ -71,7 +71,7 @@ find_files 是辅助函数；这些测试不表示注释中的 AST 动态工具�
 uv run pytest -q tests/coding_agent/tools tests/coding_agent/test_tools_manager.py tests/coding_agent/utils/test_find_files.py --tb=no
 ```
 
-新增工具时同步更新：工具调用测试、注册集合断言、[Session 组装测试](session-and-config.md) 和本说明的场景表。
+新增工具时同步更新：工具调用测试、注册集合断言、[共用组装测试](session-and-config.md) 和本说明的场景表。
 
 ## 覆盖限制
 

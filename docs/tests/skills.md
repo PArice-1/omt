@@ -6,7 +6,7 @@
 - 测试：[test_skills.py](../../tests/coding_agent/test_skills.py)。
 - 公开调用方式：`discover_skills(roots)` 返回 `SkillDiscoveryResult`，`render_skills_prompt(skills)` 返回 Markdown 字符串。
 - 保证发现结果保留 Skill 文件的绝对路径，模型目录只包含元数据与加载规则，全文仍可通过已有 read 工具按需取得。
-- 本说明覆盖独立发现与渲染模块；Runtime 现已消费目录并初始化系统消息，接入测试与契约另见 [Runtime 测试说明](runtime.md)。工具集合未改变。
+- 本说明覆盖独立发现与渲染模块；Conversation 现已消费目录并初始化系统消息，接入测试与契约另见 [Conversation 测试说明](conversation.md)。工具集合未改变。
 
 ## 场景
 
@@ -47,7 +47,7 @@ git diff --check
 
 ## 覆盖限制
 
-- 本组测试不验证 Runtime 接入或模型是否自主选择正确 Skill；独立读取链路直接调用公开 read 工具，Runtime 的假模型加载链路见 [Runtime 测试说明](runtime.md)。
+- 本组测试不验证 Conversation 接入或模型是否自主选择正确 Skill；独立读取链路直接调用公开 read 工具，Conversation 的假模型加载链路见 [Conversation 测试说明](conversation.md)。
 - 仅校验基础 name/description 字段，不实现其他 frontmatter 字段的运行时语义。
 - 不提供信任审批、路径沙箱、文件大小上限或提示词预算；调用方应只传入可信根目录。文件符号链接可指向根目录外，目录扫描也不是安全隔离。
 - 不保证并发文件修改、极深目录或恶意超大 YAML 下的资源上限。底层 rglob 对部分系统扫描错误可能自行跳过；测试验证的是传播到模块的异常处理。

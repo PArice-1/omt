@@ -1,15 +1,17 @@
-# Runtime、历史与会话 ID 测试说明
+# Conversation、历史与会话 ID 测试说明
 
 ## 对象与目的
 
-- 源码：[runtime.py](../../src/omt/coding_agent/runtime.py)
-- 测试：[test_runtime.py](../../tests/test_runtime.py)、[test_runtime_switch.py](../../tests/test_runtime_switch.py)
+- 源码：[conversation.py](../../src/omt/coding_agent/conversation.py)
+- 测试：[test_conversation.py](../../tests/coding_agent/test_conversation.py)、[test_conversation_history.py](../../tests/coding_agent/test_conversation_history.py)
 
 核心契约是：`run()` / `await arun()` 返回本轮最后回答的字符串；完整消息链留在会话的 `messages`。展示过程、保存历史、返回值三者不能相互替代。
 
 ## 初始消息与 Skills 场景
 
-构造函数保留原有 `agent, config=None` 的位置参数，新增仅关键字参数 `system_prompt: str = ""`、`skill_roots: Sequence[Path] | None = None`。CLI 在 session.py 创建 UUID 和运行配置后主动注入；Runtime 自动补 ID 的行为保留给其他直接调用方，不依赖 Store，也不写会话索引。get_config() 保留并明确返回 RunnableConfig。本次沿用 Runtime 首条 SystemMessage 的方式；相同基础提示词不能同时传给 Agent 和 Runtime。外部文件应由调用方读取后传入文本，Runtime 不自行猜测提示词文件位置。
+Conversation 接收现成 Agent、可选 config、基础提示词、Skills 搜索目录及可选事件接收函数。Manager 创建 ID/配置并注入；直接调用时缺 ID 才自动生成，不依赖 Store，不写索引。基础文本由调用方读取，不能在 Agent 和 Conversation 中重复配置。
+
+本次由旧 runtime.py 改名迁移，所有展示回归通过测试构造助手显式安装 cli.terminal.print_event；核心默认 event_handler=None。展示代码不再属于核心，历史加载与展示分离。旧低层回合与错误断言保留，只调整构造/导入和加载接口。
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
@@ -38,7 +40,7 @@
 | 检查点兼容 | Agent 配 InMemorySaver，Session 自动生成 ID | 两轮正常执行，检查点历史与 Session 历史一致，不重复消息 | test_generated_thread_id_works_with_checkpointer_without_duplicate_history |
 | 不配置 config | 只注入 Agent | 仍能完成一轮并保存消息 | test_config_is_optional |
 | 模型调用失败 | 上轮成功后，下轮模型抛异常 | 原异常传播并显示，旧历史保持不变，不提交失败回合 | test_failed_turn_preserves_previous_history_and_propagates_error |
-| 未处理的工具异常 | 本地工具直接抛 RuntimeError | 显示工具失败，不误报工具完成，不保存为成功回合 | test_tool_exception_is_displayed_and_not_saved_as_a_successful_turn |
+| 未处理的工具异常 | 本地工具直接抛 ConversationError | 显示工具失败，不误报工具完成，不保存为成功回合 | test_tool_exception_is_displayed_and_not_saved_as_a_successful_turn |
 | 已处理的工具错误 | 工具返回 status=error 的 ToolMessage，模型继续解释 | 显示工具失败，错误消息和最终解释仍保存为完整回合 | test_error_tool_message_is_displayed_as_failure_and_kept_in_history |
 | 多工具请求 | 同一 AIMessage 请求多个工具 | 每个工具结果保留，按调用 ID 与请求关联，不依靠完成先后猜配对 | test_multiple_tool_calls_are_saved_with_their_matching_results |
 | 附加数据 | 工具返回 content/artifact，AI 带附加字段、结束原因和用量 | 数据保留在历史中；显示文本不包含对象元数据 | test_tool_artifact_and_ai_metadata_are_preserved_in_history |
@@ -47,7 +49,7 @@
 
 ## 异步回合场景
 
-新增用例直接通过公开 arun 调用真实异步 Agent 图；终态缺失场景才替换异步展示方法。测试既验证异步工具支持，也保证已有同步工具和同步会话契约不回归。
+新增用例直接通过公开 arun 调用真实异步 Agent 图；终态缺失场景才替换异步执行方法。测试既验证异步工具支持，也保证已有同步工具和同步会话契约不回归。
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
@@ -62,56 +64,58 @@
 
 ## 按 thread_id 切换会话
 
-新增公开异步方法 await conversation.switch_session(thread_id) -> None，使用当前 Agent 的 Checkpointer 查询目标根图最新状态。它读取状态，并在替换成功后调用 display_history() 打印更新后的历史，不调用模型或工具，不写 sessions 索引，也不创建新会话。保留现有 tags、metadata、递归限制及其他非检查点配置；复制 configurable 后替换 ID，移除旧 checkpoint_id、checkpoint_ns、checkpoint_map，避免定位旧快照或旧子图。查询和终态校验全部通过才替换 messages、config，不把 snapshot.config 中的具体 checkpoint_id 固定到后续执行。
+公开方法 await conversation.load_history(thread_id) 只查询并校验根图最新检查点，成功才替换 messages/config；不执行模型或工具、不更新索引、不展示。复制运行选项并移除具体 checkpoint_id、checkpoint_ns、checkpoint_map，避免从旧快照分支。失败/取消保持原对象；与 run/arun 须顺序调用。
 
-仅接受非空、已完成且包含最终 AIMessage 的历史；下一节点非空、结尾是工具结果或仍有 tool_calls 时拒绝，避免将中断状态当成可直接追加输入的会话。输入 ID 不裁剪，非空 ID 原样保留。切换不重建消息对象、不重复初始化系统提示词、不重扫 Skills。所有 run、arun、switch_session 操作均要求调用方顺序执行。
+仅接受非空 ID、无待执行节点且以无工具请求的 AIMessage 结束的历史；原消息、artifact 和元数据保留，恢复时不重扫 Skills 或重复插入系统提示词。Manager 对完全无检查点的索引另行支持空会话。
 
-同步公开方法 conversation.display_history() 也可单独调用：打印“对话历史”标题后，按存储顺序展示用户、助手文本、工具调用参数和结果，工具 status=error 标为失败；无名称工具结果使用 tool_call_id 标识。空内容的工具请求仍展示调用，文本内容块使用消息的 text，不打印消息对象 repr、系统提示词、artifact 或模型元数据；空列表或只有系统消息时提示暂无历史。展示不修改消息或检查点，不重放执行，也不显示工具开始/完成通知。
+历史渲染显式调用 cli.terminal.display_history(messages)：只展示用户、助手和工具相关内容，过滤系统消息及元数据，工具名称缺失回退到调用 ID；不修改消息或检查点。测试先确认 load_history 默认没有输出，再调用渲染器验证顺序和过滤，代替旧加载后自动打印契约。
+
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
-| SQLite 最新状态与继续对话 | 目标会话已完成两轮，关闭后重新打开 Saver；当前配置带旧 checkpoint_id、子图命名空间和映射 | 加载第二轮而非旧快照，保留原系统消息和其他运行配置；新配置对象不原地修改切换前的配置或调用方原字典；继续 arun 后只有目标会话历史、新问题和新回答，磁盘状态一致 | test_switch_session_loads_latest_sqlite_history_and_continues_without_duplicates |
-| 原始消息和往返切换 | 内存检查点保存两个会话，目标包含工具请求、artifact、模型用量和 metadata；模型调用替身禁止执行 | 完整字段保留，消息列表是独立副本，ID 原样保存；可切回另一会话而不是追加两份历史，不执行模型 | test_switch_session_preserves_tool_metadata_and_can_switch_back |
-| 空白 ID | 空串或全空白 | ValueError，当前 config 和 messages 对象均保持不变 | test_switch_session_rejects_blank_id_without_changing_current_session |
-| 缺少状态或 Checkpointer | 没配置 Checkpointer，或目标 ID 没有检查点 | ValueError，不更换当前会话，也不创建目标检查点或打印历史 | test_switch_session_missing_state_or_checkpointer_keeps_current_session |
-| 待执行节点 | 真实图在 model 之前中断 | RuntimeError 提示未完成，保留当前会话，不自动恢复工具或模型执行 | test_switch_session_rejects_pending_execution_without_changing_current_session |
-| 不完整消息链 | 检查点最后为 HumanMessage、ToolMessage 或带待执行工具的 AIMessage | RuntimeError，不用中间状态覆盖当前会话 | test_switch_session_rejects_incomplete_history |
-| 查询失败或取消 | 状态查询抛 OSError 或 CancelledError | 原异常原样传播，当前 config 和 messages 对象均不变，不打印历史 | test_switch_session_query_error_or_cancellation_keeps_current_session |
-| 成功切换后展示 | 真实检查点包含多行用户输入、文本块、空文本工具请求、成功/失败工具结果及内部字段 | 更新后按顺序各展示一次，工具名称缺失时回退到调用 ID；不混入旧实例消息或内部字段；不执行模型、不改写内存及检查点消息 | test_switch_session_displays_updated_history_in_order_without_internal_metadata |
+| SQLite 最新状态与继续对话 | 目标会话已完成两轮，关闭后重新打开 Saver；当前配置带旧 checkpoint_id、子图命名空间和映射 | 加载第二轮而非旧快照，保留原系统消息和其他运行配置；新配置对象不原地修改切换前的配置或调用方原字典；继续 arun 后只有目标会话历史、新问题和新回答，磁盘状态一致 | test_load_history_loads_latest_sqlite_history_and_continues_without_duplicates |
+| 原始消息和往返切换 | 内存检查点保存两个会话，目标包含工具请求、artifact、模型用量和 metadata；模型调用替身禁止执行 | 完整字段保留，消息列表是独立副本，ID 原样保存；可切回另一会话而不是追加两份历史，不执行模型 | test_load_history_preserves_tool_metadata_and_can_switch_back |
+| 空白 ID | 空串或全空白 | ValueError，当前 config 和 messages 对象均保持不变 | test_load_history_rejects_blank_id_without_changing_current_session |
+| 缺少状态或 Checkpointer | 没配置 Checkpointer，或目标 ID 没有检查点 | ValueError，不更换当前会话，也不创建目标检查点或打印历史 | test_load_history_missing_state_or_checkpointer_keeps_current_session |
+| 待执行节点 | 真实图在 model 之前中断 | ConversationError 提示未完成，保留当前会话，不自动恢复工具或模型执行 | test_load_history_rejects_pending_execution_without_changing_current_session |
+| 不完整消息链 | 检查点最后为 HumanMessage、ToolMessage 或带待执行工具的 AIMessage | ConversationError，不用中间状态覆盖当前会话 | test_load_history_rejects_incomplete_history |
+| 查询失败或取消 | 状态查询抛 OSError 或 CancelledError | 原异常原样传播，当前 config 和 messages 对象均不变，不打印历史 | test_load_history_query_error_or_cancellation_keeps_current_session |
+| 加载后显式展示 | 真实检查点包含多行用户输入、文本块、空文本工具请求、成功/失败工具结果及内部字段 | 显式调用 CLI 渲染器后按顺序各展示一次，工具名称缺失时回退到调用 ID；不混入旧实例消息或内部字段；不执行模型、不改写内存及检查点消息 | test_load_history_displays_updated_history_in_order_without_internal_metadata |
 | 单独展示空历史 | messages 为空或仅有 SystemMessage | 标题打印一次，提示暂无历史，不泄露系统提示词，不改变 messages | test_display_history_handles_empty_or_only_system_messages |
 
 ## 结构化事件与静默执行
 
-Runtime 新增仅关键字参数 event_handler，默认使用 events.print_event 保留既有终端输出；None 表示静默消费，函数接收 RunEvent。回调是同步快速接收，不是 SSE 或异步背压 Interface。switch_session 新增 display=False 关闭成功恢复后的历史打印，默认 True 保持原有 CLI 兼容。
+events.py 仅定义 RunEvent 和 EventHandler；Conversation 的 event_handler 默认 None，诊断也通过 skills.diagnostic 发送。显式传收集器可观察事件，显式安装 CLI 渲染器才输出。load_history 不再有 display 参数，也不自动打印；这是移除旧模块后的 Python 接口调整，不提供旧包装层。
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
 | 无终端输出的执行 | 分别通过 run/arun，安装列表收集函数或传 None；真实假模型+进度工具 | 返回最终回答、完整工具消息链不变，无终端正文；收集到正确助手文本及工具开始/增量/完成，None 时仍执行完整回合 | test_execution_can_emit_events_without_terminal_output |
-| 静默恢复 | 内存 Checkpointer 中已完成的会话，switch_session(display=False) | 完整消息成功加载，不打印历史，不执行新模型请求 | test_switch_session_can_restore_without_displaying_history |
+| 默认静默 | 不传 event_handler 的 Conversation，存在无效 Skill 诊断并执行完整一轮 | 返回回答并保存历史，stdout/stderr 均为空 | test_conversation_is_silent_by_default |
+| 静默恢复 | 内存 Checkpointer 中已完成的会话，load_history(thread_id) | 完整消息成功加载，不打印历史，不执行新模型请求 | test_load_history_can_restore_without_displaying_history |
 
-事件类型与渲染源码见 [events.py](../../src/omt/coding_agent/events.py)。本组不保证所有并发事件的全局顺序，不验证网络传输。默认输出及异常/取消清理继续由原有用例回归，HTTP 使用 None 的完整链路另见 [HTTP 测试](api.md)。
+事件类型见 [events.py](../../src/omt/coding_agent/events.py)，渲染见 [terminal.py](../../src/omt/cli/terminal.py)。本组不保证所有并发事件的全局顺序，不验证网络传输。显式输出及异常/取消清理继续由原有用例回归，HTTP 使用 None 的完整链路另见 [HTTP 测试](api.md)。
 
 ## 隔离方式
 
-真实 Agent 图搭配本地假模型和临时定义的工具；工具进度通过 ToolRuntime.emit_output_delta 产生。模型输入被记录以核对第二轮确实获得历史，而非仅检查本地列表长度。只有缺失终态等难以从正常图得到的场景使用流/方法替身。
+真实 Agent 图搭配本地假模型和临时定义的工具；工具进度通过 ToolConversation.emit_output_delta 产生。模型输入被记录以核对第二轮确实获得历史，而非仅检查本地列表长度。只有缺失终态等难以从正常图得到的场景使用流/方法替身。
 
-本组不读取 Settings/auth 文件或真实模型。test_runtime.py 的模块级自动 fixture 同时将 settings.root 指向 tmp_path/.omt、将 cwd 切换到 tmp_path，因此默认用户/项目 Skills 都被隔离，不读取本机 Skills。测试完成由 monkeypatch 恢复路径。
+本组不读取 Settings/auth 文件或真实模型。test_conversation.py 的模块级自动 fixture 同时将 settings.root 指向 tmp_path/.omt、将 cwd 切换到 tmp_path，因此默认用户/项目 Skills 都被隔离，不读取本机 Skills。测试完成由 monkeypatch 恢复路径。
 
 切换测试显式传入 skill_roots=[]，不扫描默认目录；SQLite 数据库只在 tmp_path 创建，不使用应用配置路径。正常、缺失和中断状态用真实 InMemorySaver 或 AsyncSqliteSaver；仅查询 I/O 错误和取消使用 aget_state 替身，完整历史不靠 mock 拼装。
 
 ## 执行
 
 ```bash
-uv run pytest -q tests/test_runtime.py tests/test_runtime_switch.py --tb=no
+uv run pytest -q tests/coding_agent/test_conversation.py tests/coding_agent/test_conversation_history.py --tb=no
 ```
 
 ## 覆盖限制
 
-- SQLite 切换测试验证关闭并重新打开连接后可加载完整历史并继续执行；CLI /resume 选择另见 [恢复交互测试](resume.md)。这些测试不证明启动自动恢复或真正的跨进程重启链路，图中断恢复仍不属于 switch_session 功能。
-- Runtime 切换不验证工作目录访问权限、不修改 sessions 元数据或 CLI 局部登记变量；CLI /resume 在调用前复查目录归属，成功后同步入口状态，避免重复登记旧会话。
+- SQLite 切换测试验证关闭并重新打开连接后可加载完整历史并继续执行；CLI /resume 选择另见 [恢复交互测试](resume.md)。这些测试不证明启动自动恢复或真正的跨进程重启链路，图中断恢复仍不属于 load_history 功能。
+- Conversation 加载不验证工作目录访问权限、不修改 sessions 元数据或 CLI 局部选择；Manager 复查目录归属，CLI 成功后同步入口状态，避免重复登记旧会话。
 - 历史展示不是敏感信息过滤器：用户/助手文本、工具参数与可显示结果按原内容输出；不验证多媒体渲染或真实终端排版。终端写入错误不回滚已经完成的会话切换。
 - UUID 测试只验证格式、实例差异和复用，不构成持久化方案。
 - “失败保留旧历史”只指 Session 已提交的内存列表，不表示工具副作用或外部检查点自动回滚。
 - 输出顺序验证针对确定的本地执行链，不验证所有并发工具或原始事件的全局时间顺序；异步两个消费任务的打印顺序不作全局全序保证。
-- 未验证同一 Session 的并发 run/arun；当前设计用于顺序调用。异步展示的两个消费任务不等于允许并发提交回合。
+- 未验证同一 Session 的并发 run/arun；当前设计用于顺序调用。异步执行的两个消费任务不等于允许并发提交回合。
 - 假模型按测试预设调用 read，验证的是加载和历史链路，不证明真实模型一定会自主选择正确 Skill。
 - 不提供提示词或 Skills 热重载，也不负责外部提示词文件读取或工具沙箱；启用默认项目 Skills 前应确认目录可信。

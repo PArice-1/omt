@@ -13,17 +13,18 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from omt.agent.agent import Agent
-from omt.coding_agent.runtime import CreateAgentSession
+from omt.coding_agent.conversation import Conversation
+from omt.cli.terminal import display_history
 
 
-def test_switch_session_loads_latest_sqlite_history_and_continues_without_duplicates(
+def test_load_history_loads_latest_sqlite_history_and_continues_without_duplicates(
     tmp_path: Path,
 ) -> None:
     async def execute() -> None:
         path = tmp_path / "checkpoints.sqlite"
         target_config: RunnableConfig = {"configurable": {"thread_id": "target"}}
         async with AsyncSqliteSaver.from_conn_string(str(path)) as checkpointer:
-            source = CreateAgentSession(
+            source = Conversation(
                 Agent(FakeListChatModel(responses=["旧回答一", "旧回答二"]),
                       checkpointer=checkpointer),
                 target_config,
@@ -51,12 +52,12 @@ def test_switch_session_loads_latest_sqlite_history_and_continues_without_duplic
             }
             original_config = deepcopy(config)
             agent = Agent(FakeListChatModel(responses=["继续回答"]), checkpointer=checkpointer)
-            conversation = CreateAgentSession(
+            conversation = Conversation(
                 agent, config, system_prompt="新实例的规则不应混入旧会话", skill_roots=[]
             )
 
             previous_config = conversation.config
-            await conversation.switch_session("target")
+            await conversation.load_history("target")
 
             assert previous_config == original_config
             assert conversation.config is not previous_config
@@ -83,7 +84,7 @@ def test_switch_session_loads_latest_sqlite_history_and_continues_without_duplic
     asyncio.run(execute())
 
 
-def test_switch_session_preserves_tool_metadata_and_can_switch_back(
+def test_load_history_preserves_tool_metadata_and_can_switch_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def execute() -> None:
@@ -107,9 +108,9 @@ def test_switch_session_preserves_tool_metadata_and_can_switch_back(
         ]
         _ = await agent.agent.aupdate_state(current, {"messages": current_messages}, as_node="model")
         _ = await agent.agent.aupdate_state(target, {"messages": history}, as_node="model")
-        conversation = CreateAgentSession(agent, current, skill_roots=[])
+        conversation = Conversation(agent, current, skill_roots=[])
 
-        await conversation.switch_session(" target ")
+        await conversation.load_history(" target ")
 
         assert conversation.config.get("configurable", {})["thread_id"] == " target "
         assert conversation.messages == history
@@ -126,7 +127,7 @@ def test_switch_session_preserves_tool_metadata_and_can_switch_back(
         snapshot = await agent.agent.aget_state(target)
         assert conversation.messages is not snapshot.values["messages"]
 
-        await conversation.switch_session("current")
+        await conversation.load_history("current")
 
         assert conversation.config.get("configurable", {})["thread_id"] == "current"
         assert conversation.messages == current_messages
@@ -135,21 +136,21 @@ def test_switch_session_preserves_tool_metadata_and_can_switch_back(
 
 
 @pytest.mark.parametrize("thread_id", ["", " \t\n"])
-def test_switch_session_rejects_blank_id_without_changing_current_session(thread_id: str) -> None:
-    conversation = CreateAgentSession(
+def test_load_history_rejects_blank_id_without_changing_current_session(thread_id: str) -> None:
+    conversation = Conversation(
         Agent(FakeListChatModel(responses=["未使用"])), system_prompt="当前规则", skill_roots=[]
     )
     previous_config, previous_messages = conversation.config, conversation.messages
 
     with pytest.raises(ValueError, match="thread_id"):
-        asyncio.run(conversation.switch_session(thread_id))
+        asyncio.run(conversation.load_history(thread_id))
 
     assert conversation.config is previous_config
     assert conversation.messages is previous_messages
 
 
 @pytest.mark.parametrize("with_checkpointer", [False, True])
-def test_switch_session_missing_state_or_checkpointer_keeps_current_session(
+def test_load_history_missing_state_or_checkpointer_keeps_current_session(
     with_checkpointer: bool, capsys: pytest.CaptureFixture[str],
 ) -> None:
     async def execute() -> None:
@@ -157,11 +158,11 @@ def test_switch_session_missing_state_or_checkpointer_keeps_current_session(
             FakeListChatModel(responses=["未使用"]),
             checkpointer=InMemorySaver() if with_checkpointer else None,
         )
-        conversation = CreateAgentSession(agent, system_prompt="当前规则", skill_roots=[])
+        conversation = Conversation(agent, system_prompt="当前规则", skill_roots=[])
         previous_config, previous_messages = conversation.config, conversation.messages
 
         with pytest.raises(ValueError):
-            await conversation.switch_session("missing")
+            await conversation.load_history("missing")
 
         assert conversation.config is previous_config
         assert conversation.messages is previous_messages
@@ -173,7 +174,7 @@ def test_switch_session_missing_state_or_checkpointer_keeps_current_session(
     assert capsys.readouterr().out == ""
 
 
-def test_switch_session_rejects_pending_execution_without_changing_current_session() -> None:
+def test_load_history_rejects_pending_execution_without_changing_current_session() -> None:
     async def execute() -> None:
         agent = Agent(
             FakeListChatModel(responses=["不应调用"]),
@@ -182,11 +183,11 @@ def test_switch_session_rejects_pending_execution_without_changing_current_sessi
         )
         target: RunnableConfig = {"configurable": {"thread_id": "pending"}}
         _ = await agent.ainvoke({"messages": [HumanMessage(content="待执行问题")]}, target)
-        conversation = CreateAgentSession(agent, system_prompt="当前规则", skill_roots=[])
+        conversation = Conversation(agent, system_prompt="当前规则", skill_roots=[])
         previous_config, previous_messages = conversation.config, conversation.messages
 
         with pytest.raises(RuntimeError, match="未完成"):
-            await conversation.switch_session("pending")
+            await conversation.load_history("pending")
 
         assert conversation.config is previous_config
         assert conversation.messages is previous_messages
@@ -199,16 +200,16 @@ def test_switch_session_rejects_pending_execution_without_changing_current_sessi
     ToolMessage(content="只有工具结果", tool_call_id="unfinished"),
     AIMessage(content="", tool_calls=[{"name": "read_note", "args": {}, "id": "unfinished"}]),
 ])
-def test_switch_session_rejects_incomplete_history(final_message: BaseMessage) -> None:
+def test_load_history_rejects_incomplete_history(final_message: BaseMessage) -> None:
     async def execute() -> None:
         agent = Agent(FakeListChatModel(responses=["未使用"]), checkpointer=InMemorySaver())
         target: RunnableConfig = {"configurable": {"thread_id": "incomplete"}}
         _ = await agent.agent.aupdate_state(target, {"messages": [final_message]}, as_node="model")
-        conversation = CreateAgentSession(agent, system_prompt="当前规则", skill_roots=[])
+        conversation = Conversation(agent, system_prompt="当前规则", skill_roots=[])
         previous_config, previous_messages = conversation.config, conversation.messages
 
         with pytest.raises(RuntimeError, match="未完成"):
-            await conversation.switch_session("incomplete")
+            await conversation.load_history("incomplete")
 
         assert conversation.config is previous_config
         assert conversation.messages is previous_messages
@@ -217,20 +218,20 @@ def test_switch_session_rejects_incomplete_history(final_message: BaseMessage) -
 
 
 @pytest.mark.parametrize("cancel_query", [False, True])
-def test_switch_session_query_error_or_cancellation_keeps_current_session(
+def test_load_history_query_error_or_cancellation_keeps_current_session(
     cancel_query: bool,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     async def execute() -> None:
         agent = Agent(FakeListChatModel(responses=["未使用"]), checkpointer=InMemorySaver())
-        conversation = CreateAgentSession(agent, system_prompt="当前规则", skill_roots=[])
+        conversation = Conversation(agent, system_prompt="当前规则", skill_roots=[])
         previous_config, previous_messages = conversation.config, conversation.messages
         error = asyncio.CancelledError() if cancel_query else OSError("本地查询失败")
         monkeypatch.setattr(agent.agent, "aget_state", AsyncMock(side_effect=error))
 
         with pytest.raises(type(error)) as raised:
-            await conversation.switch_session("target")
+            await conversation.load_history("target")
 
         assert raised.value is error
         assert conversation.config is previous_config
@@ -240,7 +241,7 @@ def test_switch_session_query_error_or_cancellation_keeps_current_session(
     assert capsys.readouterr().out == ""
 
 
-def test_switch_session_displays_updated_history_in_order_without_internal_metadata(
+def test_load_history_displays_updated_history_in_order_without_internal_metadata(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def execute() -> None:
@@ -268,9 +269,11 @@ def test_switch_session_displays_updated_history_in_order_without_internal_metad
         ]
         _ = await agent.agent.aupdate_state(config, {"messages": history}, as_node="model")
         expected = deepcopy((await agent.agent.aget_state(config)).values["messages"])
-        conversation = CreateAgentSession(agent, system_prompt="CURRENT_PROMPT_PRIVATE", skill_roots=[])
+        conversation = Conversation(agent, system_prompt="CURRENT_PROMPT_PRIVATE", skill_roots=[])
 
-        await conversation.switch_session("history")
+        await conversation.load_history("history")
+        assert capsys.readouterr().out == ""
+        display_history(conversation.messages)
 
         assert conversation.messages == expected
         assert (await agent.agent.aget_state(config)).values["messages"] == expected
@@ -303,14 +306,14 @@ def test_switch_session_displays_updated_history_in_order_without_internal_metad
 def test_display_history_handles_empty_or_only_system_messages(
     system_prompt: str, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    conversation = CreateAgentSession(
+    conversation = Conversation(
         Agent(FakeListChatModel(responses=["未使用"])),
         system_prompt=system_prompt,
         skill_roots=[],
     )
     previous_messages = deepcopy(conversation.messages)
 
-    conversation.display_history()
+    display_history(conversation.messages)
 
     output = capsys.readouterr().out
     assert output.count("[对话历史]") == 1

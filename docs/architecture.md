@@ -2,108 +2,83 @@
 
 ## 1. 总览
 
-项目提供单进程、异步执行的交互式 Coding Agent，以及固定工作目录、单用户的非流式 FastAPI 入口，同时保留同步 Agent 与 Runtime 接口。LangChain/LangGraph 负责模型与工具之间的执行循环；OMT 负责模型连接、依赖组装、会话历史和终端显示。
+CLI 与非流式 FastAPI 是平级的应用入口，共用 SessionManager、依赖组装和 SQLite 检查点。LangChain/LangGraph 负责模型与工具循环，OMT 负责模型连接、会话编排、完整历史校验，以及各入口的展示或响应投影。
 
 ```text
-CLI: omt
-  └─ session.session() → asyncio.run(asession())
-       ├─ load_settings() → 选择 provider/model
-       ├─ load_system_prompt() → 读取包内 prompts/system.md
-       ├─ _get_model(settings)
-       │    ├─ load_auth() → 认证
-       │    ├─ load_model_store() → 精确匹配模型与 URL
-       │    └─ Model → models_provider → 提供商初始化函数
-       ├─ 确认预建数据库存在，生成 thread_id、运行 config 并固定 workspace_path
-       ├─ SessionStore(db_path) → 会话索引与检查点使用同一个数据库文件
-       ├─ AsyncSqliteSaver.from_conn_string(db_path) → 在会话期间保持连接
-       ├─ await _get_agent(model, checkpointer=...) → 组合内置工具、MCP 工具与检查点
-       ├─ CreateAgentSession(agent, config=config, system_prompt=...) → 合并提示词与 Skills
-       └─ PromptSession 输入循环
-            ├─ await _check_user_input(text) → 退出、/resume 列表与切换，或普通请求
-            ├─ 首次执行前 await store.insert_session(...)，同一会话只登记一次
-            └─ await conversation.arun(text) → 异步流式展示过程，返回最后回答 str
+omt / python -m omt.cli               omt-api
+  → cli.app.run_cli                    → api.app lifespan + routes
+     输入、命令、当前选择、终端输出          鉴权、请求校验、JSON 投影
+               \                       /
+                bootstrap.open_session_manager
+                  → 固定配置、模型、工具/MCP、Store、AsyncSqliteSaver
+                  → SessionManager
+                     ├─ SessionStore：索引与目录归属
+                     ├─ Checkpointer：每次读取最新历史
+                     └─ Conversation：一轮执行、完整终态校验、结构化事件
+                          → Agent → 模型 / 工具
 ```
 
-配置装配在外部完成，再将 Agent 注入会话。会话不读取认证文件，不自行创建模型，也不重新实现工具执行循环。
+核心不导入 CLI 或 API，不维护全局“当前会话”，不直接打印终端。CLI 当前选择只是入口局部状态；所有会话登记、查询、恢复和执行均通过 Manager，不再直接编排 Store 或 Conversation。
 
 ### 代码地图
 
 | 模块 | 职责 | 不承担的工作 |
 | --- | --- | --- |
-| [coding_agent/session.py](../src/omt/coding_agent/session.py) | CLI 组装、创建会话 ID 与运行配置、调用 Store 登记索引、/resume 列表与选择、输入校验与重试 | 保存完整消息历史、手动执行模型请求的工具 |
-| [api/](../src/omt/api/) | 应用 lifespan、访问令牌校验、HTTP 请求/响应投影及稳定错误 | CLI 命令解析、任意目录切换、工具执行循环 |
-| [coding_agent/bootstrap.py](../src/omt/coding_agent/bootstrap.py) | CLI/HTTP 共用的模型解析、内置工具与可选 MCP 组装 | 输入循环、会话索引、HTTP 传输 |
-| [coding_agent/session_manager.py](../src/omt/coding_agent/session_manager.py) | 固定目录会话索引、按 ID 加载最新检查点、会话互斥、全局运行容量及关闭清理 | 多进程锁、持久化任务台账、工具副作用回滚 |
-| [coding_agent/events.py](../src/omt/coding_agent/events.py) | 结构化过程事件与默认终端渲染 | SSE 协议、历史持久化、全局事件全序 |
-| [coding_agent/prompts/](../src/omt/coding_agent/prompts/) | 保存并加载随包分发的基础系统提示词 | 用户配置覆盖、Skill 正文加载、模板变量或热重载 |
-| [coding_agent/settings.py](../src/omt/coding_agent/settings.py) | 配置文件读取、字段校验、设置缓存 | 创建模型、OAuth 登录/刷新 |
-| [ai/model.py](../src/omt/ai/model.py) | 通过注册表初始化模型，暴露 `model.model` | 维护对话或渲染终端 |
-| [ai/models_manager.py](../src/omt/ai/models_manager.py) 与 [models/deepseek.py](../src/omt/ai/models/deepseek.py) | 提供商路由、连接参数校验、调用 SDK 初始化 | 自动发现提供商或转换任意认证协议 |
-| [agent/agent.py](../src/omt/agent/agent.py) | 封装 `create_agent`、同步/异步调用和 v3 流，透传底层能力 | 管理 CLI 或自行拼接会话历史 |
-| [coding_agent/runtime.py](../src/omt/coding_agent/runtime.py) | 初始化提示词与 Skills 目录、一轮执行、产生过程事件、提交历史、按 ID 从检查点切换已完成会话 | 管理数据库文件/索引、模型配置解析、外部提示词文件读取 |
-| [coding_agent/store.py](../src/omt/coding_agent/store.py) | SessionStore 读写预建的 sessions 表，CLI 首次执行前登记会话元数据 | 自动建库建表、保存图状态、会话恢复或 CLI 命令 |
-| [coding_agent/tools_manager.py](../src/omt/coding_agent/tools_manager.py) | 显式加载内置工具，每次返回新列表 | 当前不执行文件内注释掉的 AST 动态扫描 |
-| [coding_agent/skills.py](../src/omt/coding_agent/skills.py) | 从显式目录发现 Skill 元数据、返回诊断、生成 Runtime 使用的目录提示词 | 不自动加载正文到会话、不执行脚本 |
-| [coding_agent/tools/](../src/omt/coding_agent/tools/) | 读取、编辑、写入文件和执行 Bash | 权限审批、沙箱、工具副作用回滚 |
-| [utils/find_files.py](../src/omt/coding_agent/utils/find_files.py) | 按 glob 查找排序后的文件路径 | 不是已注册工具，也不参与当前静态工具注册 |
+| [cli/app.py](../src/omt/cli/app.py) | 交互生命周期、延迟创建首个会话、调用 Manager | 检查点加载、并发和失败保护 |
+| [cli/commands.py](../src/omt/cli/commands.py) | /resume、退出、编号映射和当前选择 | 模型执行、直接读写 Store |
+| [cli/terminal.py](../src/omt/cli/terminal.py) | 同步/异步输入校验、事件和历史渲染、警告 | 保存历史、HTTP 响应 |
+| [api/](../src/omt/api/) | lifespan、Bearer 校验、请求/响应和稳定错误 | CLI 命令、会话内部编排 |
+| [coding_agent/bootstrap.py](../src/omt/coding_agent/bootstrap.py) | 读取提示词和模型配置、工具/MCP、Store/Saver/Manager 的共用生命周期 | 输入循环、HTTP 传输 |
+| [coding_agent/configuration.py](../src/omt/coding_agent/configuration.py) | 共用会话选项、类型化 MCP 连接配置；入口各自继承并指定前缀 | HTTP 令牌、读取模型认证 |
+| [coding_agent/session_manager.py](../src/omt/coding_agent/session_manager.py) | 按 ID 操作、目录归属、最新历史、互斥/容量、失败和关闭清理 | 跨进程锁、回滚、全局当前会话 |
+| [coding_agent/conversation.py](../src/omt/coding_agent/conversation.py) | 初始提示词/Skills、一轮同步/异步执行、历史加载和终态校验、过程事件 | 索引、模型配置、终端显示 |
+| [coding_agent/events.py](../src/omt/coding_agent/events.py) | RunEvent 数据与 EventHandler 类型 | 渲染、SSE、持久化 |
+| [coding_agent/store.py](../src/omt/coding_agent/store.py) | 预建 sessions 表的元数据读写 | 消息、自动建表、检查点恢复 |
+| [coding_agent/settings.py](../src/omt/coding_agent/settings.py) | 模型配置、认证与目录读取及校验 | 会话编排、OAuth |
+| [ai/model.py](../src/omt/ai/model.py)、[models_manager.py](../src/omt/ai/models_manager.py) | 提供商注册和模型初始化 | 历史和展示 |
+| [agent/agent.py](../src/omt/agent/agent.py) | create_agent 与同步/异步调用、v3 流包装 | CLI、拼接历史、手动执行工具 |
+| [coding_agent/prompts/](../src/omt/coding_agent/prompts/)、[skills.py](../src/omt/coding_agent/skills.py) | 包内基础规则、可信目录的 Skill 元数据发现 | 沙箱、自动执行 Skill 脚本 |
+| [tools_manager.py](../src/omt/coding_agent/tools_manager.py)、[tools/](../src/omt/coding_agent/tools/) | 静态工具注册、文件和 Bash | 权限审批、事务回滚 |
 
-## 2. CLI 与组装入口
+兼容性：命令 omt、HTTP 路由及 JSON 字段不变。旧 Python 路径 coding_agent.session、coding_agent.runtime 和 CreateAgentSession 已移除；同步入口改用 cli.app.main()，异步入口改用 cli.app.run_cli()，低层会话对象改用 Conversation。load_history() 不再自动展示，核心默认静默；需要显示的调用方显式安装 CLI 渲染。这是内部 Python 调用接口迁移，不提供旧模块包装层。
 
-`pyproject.toml` 将命令 `omt` 指向 `omt.coding_agent.session:session`。`session()` 保持普通函数，仅在最外层调用一次 `asyncio.run(asession())`；已有事件循环的调用方应直接 `await asession()`。也可通过模块运行：
+## 2. 入口与共用组装
 
 ```bash
+# 人工启动：会读取配置，提交消息可能计费并执行工具；不是离线测试。
 uv run omt
-# 或：
-uv run python -m omt.coding_agent.session
+uv run python -m omt.cli
+uv run omt-api
 ```
 
-这些是人工运行命令，不是离线测试：会读取用户配置，提交问题后可能请求真实提供商并执行工具。
+omt 指向 omt.cli.app:main。main() 仅在最外层调用一次 asyncio.run(run_cli())；已有事件循环应 await run_cli()。omt-api 指向 omt.api.app:main，默认监听 127.0.0.1:8000，单 worker。HTTP 业务需独立的访问令牌，health 公开且不调用模型。
 
-`asession()` 先读取配置和内置系统提示词，确认 session.py 的 db_path 指向已有数据库文件，再初始化一次模型、Agent、会话和 `PromptSession`。会话索引表仍须预先创建，不在入口执行建表或迁移。入口生成 UUID 和 RunnableConfig 并注入 Runtime，记录启动时 Path.cwd().resolve() 作为工作目录；数据库路径不是工作目录。随后在同一事件循环中顺序处理输入与回合：
+两者默认通过 bootstrap.open_session_manager(options)：
+1. 确认配置工作目录是实际 cwd，且数据库文件和 sessions 表预先存在；不会 chdir、建索引表或迁移。
+2. 读取包内基础提示词，再解析模型设置/认证/目录，组装模型、内置工具和选定的 MCP。
+3. 持有一个 AsyncSqliteSaver，创建 Store 与 Manager。
+4. 退出先 manager.aclose()，取消并等待活跃历史/运行操作，再关闭 Saver 连接。
 
-- `_aget_user_input()` 使用 prompt_toolkit 的 `prompt_async()`，提交时拒绝全空白和 NUL 字符，保留合法文本原样。原有同步 `_get_user_input()` 保留供同步调用方使用。
-- `_check_user_input()` 独立识别并处理退出与 /resume 命令，返回动作 run、handled、exit 以及成功恢复的 SessionRecord（没有则为 None）；编号字典原地更新。asession() 只根据结果退出、跳过命令或继续普通回合，并根据恢复记录同步入口 ID 和登记状态。普通请求文本不被检查函数改写。
-- `/exit`、`/quit` 经过去空白、忽略大小写的匹配后退出，不发给模型；EOF/Ctrl-D 退出。
-- `resume` 是 `/resume` 的无斜杠别名，共用同一命令分支，避免误输入 `resume 1` 被发给模型、登记为新会话或触发工具。独立词 resume 现在是保留命令词，错误参数也只提示；resume-help 等不同词仍作为普通输入。已有检查点中的旧消息不因此删除或改写。
-- `/resume` 通过 list_sessions(workspace_path) 读取当前启动目录的索引，显示 number、title、updated_at（上次修改时间）。0 固定为当前会话，其余沿用 Store 按修改时间从新到旧的顺序，不重复当前 ID；标题折叠为单行。尚未登记的当前会话显示“新对话”和启动 UTC 时间，不写占位记录。
-- `/resume N` 只选择最近一次已展示列表中的正数编号，通过 get_session(thread_id) 复查记录存在且仍属于当前目录，再 await conversation.switch_session(thread_id)。0 提示无需恢复；未展示列表、无效编号或参数格式错误只提示，不执行 Agent 或登记索引。新增记录不改变已经展示的编号映射。
-- 切换成功后调用 Store.update_session_updated_at 刷新目标修改时间，再同步入口的 thread_id、当前修改时间和已登记标记，不重复插入原索引、不改变创建时间；清空旧编号映射，下次切换须重新 /resume。SQLite 查询与恢复失败单独提示，失败切换不改变原历史和登记状态，也不刷新修改时间。若切换已成功但修改时间写入失败，明确提示部分失败，仍同步入口到目标会话，避免错写旧 ID；两步之间没有跨模块原子事务。列表、编号解析和恢复均在普通输入登记之前处理；命令名忽略大小写。
-- 输入阶段和执行阶段 Ctrl-C 均退出整个 CLI 会话，不再取消当前操作后重新等待输入。输入的 KeyboardInterrupt 向外传播；执行期间使用 asyncio.run 的默认 SIGINT 取消机制，由 Runtime 清理消费任务并关闭图流。最外层 session() 捕获 KeyboardInterrupt，仅显示会话结束，不打印堆栈。
-- 不再为单个回合创建取消包装任务或安装自定义 SIGINT 处理器。外部程序发起的任务取消仍向上传播，不作为用户退出或普通失败吞掉；已有事件循环中直接调用 asession() 时，由调用方处理取消或 KeyboardInterrupt。关闭流不保证同步工具的线程或外部副作用立即停止，事件循环关闭时仍可能等待正在执行的同步工具。
-- 普通轮次异常由 runtime 展示并抛出，入口提示可继续输入。启动阶段的配置/初始化错误不在此重试循环内。
-- runtime 已展示回答，入口不再打印 `arun()` 的返回值，避免重复输出。
-- 第一条普通请求（不含退出或 /resume 命令）执行前，await SessionStore.insert_session() 登记索引，以输入前 10 个字符作为标题。插入提交后才设置登记标记；后续回合（包括首次执行失败后的重试）不重复插入。直接退出或输入时 Ctrl-C 不登记空会话。
-- SQLite 索引写入失败单独提示“本轮尚未执行”，不调用 arun，下一次输入可重新尝试登记；不把数据库错误误报为模型执行失败。首轮开始后即使失败或取消，索引也保留，以便定位可能已经写入的中间检查点，索引存在不代表回合执行成功。
+SessionSettings 共享 db_path、workspace_path、max_concurrent_runs、skill_roots、mcp_servers。ApiSettings 使用 OMT_API_ 且要求访问令牌；CliSettings 使用 OMT_CLI_，不要求也不读取 HTTP 令牌。两者默认数据库均为 ~/.omt/agent/state/omt.sqlite。CLI 为兼容保留既有 knowledge stdio 本机配置，可用 OMT_CLI_MCP_SERVERS={} 禁用或替换；API 默认 MCP 为空，不继承 CLI 的本机路径。模型的三份 JSON 配置仍由 settings.py 读取，与这些启动选项不同。
 
-输入验证不是工具权限控制。Ctrl-C 的处理也不等于 LangGraph 检查点的暂停/恢复，不能保证正在进行的外部操作被撤销。
+### CLI 交互
 
-### 基础系统提示词
+- PromptSession 异步读取；校验与 Manager 共用 validate_message：1～32000 字符，非全空白、无 NUL，保留合法输入原文。
+- /exit、/quit、EOF 退出；命令支持首尾空白及大小写混合。resume 是 /resume 的别名；resume-help 等不同词仍是普通消息。
+- 首条普通请求才调用 Manager.create_session，以原文前 10 字符为标题。仅看列表、退出或输入 Ctrl-C 不登记空会话。登记失败不执行模型，下一次输入可重试；首轮开始后即使失败/取消也保留索引。
+- /resume 调用 Manager.list_sessions，只显示当前工作目录的记录。0 固定为当前选择；尚未登记时显示“新对话”和启动 UTC 时间。其他编号沿用 Store 修改时间排序，标题折为单行。
+- /resume N 只使用最近展示的编号映射，调用 Manager.open_session 复查归属、加载历史并刷新修改时间。成功后才替换 CLI 当前选择、展示历史与警告，并清空旧编号；失败保持旧选择，删除/移出目录的记录使旧映射失效。
+- 普通请求调用 Manager.run(..., event_handler=terminal.print_event)。最终回答已通过事件输出，入口不再次打印 answer；成功轮次由 Manager 刷新 updated_at。
+- 模型/工具失败后允许输入其他命令，但同一会话会被 Manager 标为需恢复，不能盲目重跑；可选择其他会话或退出检查。不再沿用旧 CLI 的失败后直接追加策略。
+- Ctrl-C 在输入与执行阶段均退出整个 CLI。执行时沿用 asyncio.run 默认 SIGINT 取消，Conversation 清理消费任务和流，Manager 先于 Saver 关闭。main 只捕获 KeyboardInterrupt；外部任务取消向上传播，不伪装成正常退出。同步工具线程、外部进程和已经发生的副作用不保证立即停止或撤销。
 
-基础规则保存在 [coding_agent/prompts/system.md](../src/omt/coding_agent/prompts/system.md)，作为版本化的 Markdown 包资源分发；内容涵盖工作流程、现有工具使用、授权和敏感信息处理。提示词是模型指引，不是实际沙箱或权限实现。
+CLI 配置和示例见[使用说明](cli.md)，交互证据见[CLI 测试](tests/cli.md)及[/resume 测试](tests/resume.md)。
 
-[prompts/__init__.py](../src/omt/coding_agent/prompts/__init__.py) 的 `load_system_prompt() -> str` 使用 `importlib.resources.files` 加载 UTF-8 文本，不依赖 cwd，不读取用户或项目中的同名文件。资源缺失、编码错误或纯空白内容会在启动阶段报错，且发生在模型初始化之前；不静默回退为无基础规则。
+### 基础规则与 HTTP
 
-CLI 将文本传给 `CreateAgentSession(system_prompt=...)`，由 Runtime 与 Skills 目录合并到首条 SystemMessage；不同时写入 Agent.system_prompt，避免重复。基础规则在 system.md 中维护，不写成长字符串散落在 session.py 或 runtime.py。每个新 CLI 会话加载一次；直接创建 Runtime 时仍需自行传入文本，默认参数保持空串。源码改动对新会话生效，已安装的 wheel 需要重新构建/安装；既有会话不热重载。
+load_system_prompt() 使用 importlib.resources 读取包内 prompts/system.md，与 cwd 无关；资源缺失、非 UTF-8 或纯空白在模型初始化前失败。bootstrap 每次生命周期读取一次，Manager 只在空会话首轮传入 Conversation，与 Skills 目录合并成单条 SystemMessage；不要同时传给 Agent.system_prompt。恢复已有消息不替换原系统规则，也不重新扫描 Skills。
 
-验证与分发检查见 [提示词测试说明](tests/prompts.md)。
-
-### HTTP 入口与资源生命周期
-
-`omt-api` 指向 `omt.api.app:main`，默认仅监听 127.0.0.1:8000，单 worker。create_app() 创建应用时不初始化模型，lifespan 确认工作目录等于进程 cwd、数据库与 sessions 表已存在后，加载提示词、模型和显式配置的 MCP，保持一个 AsyncSqliteSaver，再注入 SessionManager。退出时先关闭 Manager、取消并等待其活跃读取/运行，再关闭 Saver。默认 HTTP MCP 为空，不继承 CLI 本机硬编码服务器。共享组装位于 bootstrap.py；CLI 的 _get_model 是 build_model 兼容别名，_get_agent 保留 CLI 的 MCP 配置后调用共用 build_agent。
-
-```text
-HTTP + Bearer 认证 → 请求校验 / 响应投影
-  → SessionManager（固定目录、按 session_id 操作、同会话互斥、全局容量）
-    → SessionStore（元数据）+ 最新 Checkpointer 状态
-    → 独立 Runtime（event_handler=None，不打印执行正文）
-      → Agent / Tools
-```
-
-HTTP 创建会话立即登记索引，允许空会话；不是 CLI 首条输入前登记。session_id 直接映射 thread_id，每次读取或运行重新从最新检查点加载，不缓存全局当前会话；无检查点允许开始首轮，已有但未完成的状态返回冲突，不直接重试工具。成功后刷新 updated_at；若仅更新时间写入失败，仍返回 completed 和警告。失败/取消在当前 Manager 内阻止再次执行该会话，重启后根据最新磁盘检查点判断；没有持久化失败台账或原子事务。run_id 是本次请求标识，不是可查询后台任务。
-
-业务路由均需独立的 HTTP Bearer 令牌，未配置或太短时启动失败；health 为公开存活检查，不请求模型。历史仅投影用户/助手/工具文本和工具关联，不返回系统提示词、artifact、模型元数据或检查点；这不是正文脱敏。输入拒绝额外字段，客户端不能更换工作目录、模型 URL 或 MCP 命令。请求期间不调用 chdir。当前进程内互斥不保护外部 CLI 或其他 worker，不能同时写同一会话。
-
-非流式执行等待完成后返回 JSON；同会话忙返回 409，全局容量满返回 429。断线不保证立即取消，尚无 SSE、后台任务查询、取消、事件重放、多用户或沙箱。启动配置、完整路由、错误及限制见 [HTTP 使用说明](api.md)，离线验证见 [HTTP 测试说明](tests/api.md)。
+HTTP 显式创建即登记，允许空会话；历史响应只投影用户/助手/工具文本和工具关联，不暴露系统提示词、artifact、模型元数据或检查点。其 JSON 调用默认不绑定过程回调。完整路由、鉴权和错误见[HTTP 使用说明](api.md)。
 
 ## 3. 模型连接与配置
 
@@ -126,7 +101,7 @@ HTTP 创建会话立即登记索引，允许空会话；不是 CLI 首条输入�
 
 ### 解析与初始化
 
-`_get_model(settings)` 要求：
+`bootstrap.build_model(settings)` 要求：
 
 1. provider 已存在于 `models_manager.models` 注册表；目前只有 DeepSeek。
 2. `auth.json` 有对应认证，类型是 `api_key`，Key 非空白。
@@ -141,72 +116,58 @@ HTTP 创建会话立即登记索引，允许空会话；不是 CLI 首条输入�
 
 ## 4. 会话契约与历史
 
-### 三种容易混淆的对象
+### 对象与职责
 
-| 名称 | 含义 |
+| 对象 | 含义 |
 | --- | --- |
-| CLI 函数 `session()` | 创建依赖并接收用户输入的应用入口 |
-| `CreateAgentSession` | 负责多轮历史和展示的会话对象；当前保留此公开名称 |
-| 一轮 `session.run(text)` / `await session.arun(text)` | 完成一个用户请求，内部可以调用模型和工具多次；同一实例仅支持顺序执行 |
+| CLI / HTTP | 输入、当前选择、展示或协议适配 |
+| SessionManager | 应用层会话服务：按 ID 协调索引、检查点、互斥、运行和关闭；不是 FastAPI middleware |
+| Conversation | 顺序执行的一轮/多轮低层会话对象，不感知入口 |
+| SessionStore / AsyncSqliteSaver | 元数据 / 完整图状态，默认同一 SQLite 文件，不是同一事务 |
 
-`CreateAgentSession(agent, config=None, *, system_prompt="", skill_roots=None, event_handler=print_event)` 接收现成 Agent，原有两个位置参数兼容。CLI 主动创建 ID 和 config，再将同一个 thread_id 交给 Runtime 与 Store；Runtime 不管理数据库文件或 sessions 索引，切换时通过现有图的 Checkpointer 读取状态。初始化时复制配置外层和 `configurable` 字典；没有 `thread_id` 键才生成 UUID v4 字符串，作为非 CLI 直接调用方的兼容默认行为。已有值保持不变，后续每轮复用同一 ID，get_config() 返回当前 RunnableConfig。其他嵌套配置不是深拷贝。
+### Manager 的参数与状态
 
-初始化消息只准备一次：
+SessionManager(agent, store, *, workspace_path, system_prompt, skill_roots, max_concurrent_runs=1) 要求 Agent 配置 Checkpointer。store 仅保存索引，历史由 Checkpointer 负责；workspace_path 规范化后用于归属过滤，不 chdir，也不是沙箱。system_prompt 是正文，skill_roots 是搜索目录，[] 关闭发现，仅在无检查点时生效。max_concurrent_runs 限制同一实例的 run 操作，不限制图内部工具并发，满载立即拒绝、不排队。
 
-- `system_prompt` 是调用方提供的文本，不是文件路径；读取外部提示词文件由调用方负责。
-- 默认按 `settings.root/agent/skills`（通常为 `~/.omt/agent/skills`）、`cwd/skills` 顺序发现 Skills，项目版本覆盖同名用户版本。显式 `skill_roots` 替换默认目录；空列表关闭发现。
-- 基础提示词与 Skills 目录以空行连接，非空内容合并成首条 `SystemMessage`；两者都为空或仅空白时，初始 `messages=[]`，不插入空系统消息。基础提示词原始格式保留，目录不含正文。
-- 扫描诊断以 `[Skills]` 前缀写入 stderr，不加入模型历史。只在创建会话时扫描；后续轮次不热重载。
-- 此入口沿用 Runtime 管理初始系统消息的方式；同一基础提示词不要再传给 `Agent(system_prompt=...)`，否则底层会在请求时再次添加。Agent 本身的该能力仍保留供其他调用方使用。
+- _running：已接纳且未结束的 run 数；_busy：运行、读取或激活的会话 ID，同会话不可重入。
+- _active：关闭时要取消并等待的操作任务；_tainted：本进程观察到运行失败/取消、需人工检查的 ID；_closed：拒绝新操作的关闭标记。
+- 上述状态只属于当前进程与 Manager，不是持久化任务台账、跨进程锁或租约。CLI/API 复用同一实现，不代表分别启动的两个进程受同一把锁保护；不得同时写同一会话。
 
-### 一轮数据流
+每次 get_history、open_session 或 run 都从最新检查点装载独立 Conversation，不缓存 Runtime 或全局当前会话。无检查点视为空会话；已有状态要求图无待执行节点且最终消息是无工具请求的 AIMessage，未完成或失败会话不伪装成新会话。
+
+get_history 只读取、不刷新修改时间。open_session 返回 LoadedSession(record, messages, warnings)，校验成功后刷新时间；原始消息由 CLI 决定如何显示，Manager 不改变当前选择。run 返回 RunResult(session_id, run_id, answer, warnings)，run_id 不是可查询后台任务。event_handler 只影响本轮，默认 None。
+
+运行失败/取消将 ID 加入 _tainted，后续读取/激活/运行均拒绝；重启后根据磁盘检查点判断，不等于失败回滚。模型、工具或终态错误转换为稳定 SessionError；仅最后更新时间失败仍返回成功，附 session_timestamp_update_failed，避免用户因元数据写入失败重跑有副作用的工具。aclose 拒绝新操作并取消/等待活跃历史与运行任务；调用方再关闭 Saver。
+
+### Conversation 初始化与一轮执行
+
+Conversation(agent, config=None, *, system_prompt="", skill_roots=None, event_handler=None) 接收现成 Agent，不读认证或模型配置。配置复制外层及 configurable 字典；仅当 thread_id 键不存在时生成 UUID。既有值保持不变，其他嵌套配置不深拷贝。
+
+新会话默认按 settings.root/agent/skills、cwd/skills 发现 Skill，项目覆盖用户同名项；显式目录替换默认，[] 关闭。基础提示词与 Skill 元数据目录合并为首条 SystemMessage，均为空时 messages=[]。正文不预加载，诊断经 skills.diagnostic 事件发送，不加入历史。低层直接创建的实例只在初始化时扫描，Manager 恢复已有历史时使用空搜索目录避免重扫。
 
 ```text
-上一轮 self.messages + 新 HumanMessage
-           ↓
-Agent.stream_event(...) / await Agent.astream_event(...)
-           ↓
-LangGraph 执行模型 → 工具 → 模型，runtime 显示过程
-           ↓
-stream.output / await stream.output()：本次执行的最终状态
-           ↓
-校验最后消息是无待执行 tool_calls 的 AIMessage
-           ↓
-self.messages = 完整 messages 列表
-return 最后 AIMessage.text
+上一轮完整 messages + HumanMessage
+  → Agent 同步/异步 v3 流 → 模型 / 工具
+  → 读取最终 output["messages"]
+  → 校验最后消息为无 tool_calls 的 AIMessage
+  → 替换 self.messages，返回最终 AIMessage.text
 ```
 
-必须保持的区别：
+run()/arun() 只返回最终文本，不把 token、日志或工具进度拼入答案。完整原始消息保留系统规则、工具请求 ID、ToolMessage artifact 和模型元数据；下一轮提交完整历史，不能再次追加同一终态列表。终态缺失、消息为空、最终仍是工具结果/工具请求时抛错。
 
-- `run(text) -> str` 与 `await arun(text) -> str` 共享终态校验与历史提交逻辑，只返回最后一次模型回答的纯文本，不返回整份状态，也不拼入中间日志。
-- `self.messages` 保存完整消息对象：可选的初始 SystemMessage、HumanMessage、携带工具请求的 AIMessage、ToolMessage、最终 AIMessage，可包含多次工具调用。初始系统消息随完整历史传递，不在每轮重复插入。
-- 以最终列表**替换**已有历史，不将它再次追加到旧历史。下一轮提交的是“完整历史 + 新输入”。
-- 不从文本片段重建消息；原始对象保留工具调用 ID、ToolMessage artifact 和 AIMessage 元数据。
-- 最终状态缺失、消息为空、最后是工具结果或仍有工具请求时，当前 Runtime 报错，不把中间内容假装成总结。
+成功前不改变内存 messages；异常或取消向上传播，取消不显示为普通执行失败。内存历史未提交不代表 Checkpointer、文件、进程或远程副作用回滚。Manager 不缓存失败实例，而是拒绝同 ID 继续执行。
 
-成功提交之前不改变 `self.messages`。普通异常会显示后继续向上抛出，异步任务取消也向上传播但不显示为普通执行失败，二者都保留此前已完成的会话历史；已执行的文件修改、进程副作用以及外部 checkpointer 已写入的状态不因此回滚。
+### 低层历史加载
 
-### 内存与检查点
+await conversation.load_history(thread_id) 只从当前 Agent 的 Checkpointer 加载根图最新状态，不运行模型/工具、不重新扫描 Skills、不读写索引，也不打印。它复制当前配置、替换 thread_id，并清除 checkpoint_id、checkpoint_ns、checkpoint_map，避免之后从旧具体快照分支。成功才同时替换 messages/config，保留原始消息对象；空白 ID、无状态/消息、待执行节点、非已完成 AI 终态或查询失败均不改变当前状态。取消也传播。调用方须与 run/arun 顺序使用；需要互斥应经 Manager。
 
-CLI 当前在 asession() 中打开 AsyncSqliteSaver，将检查点传给 Agent，数据库文件由 session.py 的 db_path 指定。Runtime 仍在内存中保存完整历史并逐轮提交；每次启动 CLI 生成新的 UUID 并注入 Runtime，不自动恢复上次会话；用户可通过 /resume 和 /resume N 显式选择当前目录下已完成的历史，加载旧 thread_id 的状态后继续交互。仅有索引不保证可恢复，缺失或未完成的检查点会被拒绝。
+CLI 的 terminal.display_history(messages) 独立按历史顺序显示用户、助手、工具请求和结果；过滤系统提示词、artifact 和模型元数据，不重放工具开始/完成通知。工具名缺失用调用 ID，空历史提示暂无内容。字段过滤不等于正文或参数脱敏。
 
-底层 Agent 支持 checkpointer 和 thread_id。Runtime 的 switch_session() 已支持按 ID 加载最新已完成状态，但运行策略仍是提交完整历史，不是改为“只提交本轮增量”。内存和 SQLite 回归测试验证加载后继续执行不会重复消息。未来变更输入策略时，应先明确历史主源并同步调整回归测试。
+### 索引与检查点
 
-### Runtime 会话切换
+SessionStore 四个异步方法分别连接并关闭预建 sessions 表：insert_session、get_session、list_sessions、update_session_updated_at。路径 expanduser/resolve，数据库使用 mode=rw 防止误建空库；错误向上传播。列表精确匹配目录，按 updated_at 降序、created_at 降序、thread_id 升序排序，不归并 Git 根目录。
 
-await conversation.switch_session(thread_id) 使用当前 Agent 的现有 Checkpointer 查询目标根图的最新状态，成功后在同一实例中替换 messages 和 config，不创建另一个 Runtime。保留当前运行选项，复制配置外层和 configurable 后替换 thread_id，并移除 checkpoint_id、checkpoint_ns、checkpoint_map；不把返回快照的具体 checkpoint_id 固定到后续调用，避免追加输入时从旧检查点分支。
-
-切换只读检查点、不执行模型或工具、不重新扫描 Skills 或插入系统提示词，不操作 sessions 表。目标历史中的原始消息、ID、工具结果 artifact 和模型元数据均保留。更新 messages、config 后默认调用同步 display_history()；HTTP 使用新增的仅关键字参数 display=False 关闭自动展示，不改变校验和加载行为。按历史顺序打印用户消息、助手文本、工具调用参数和结果；错误工具结果标为失败，工具名缺失时显示 tool_call_id。该方法也可独立调用，空历史或仅有系统消息时提示暂无历史。展示不输出系统提示词、artifact 或模型元数据，不重放工具开始/完成通知；消息正文与工具参数仍按原内容展示，不提供通用脱敏。目标不存在或没有消息、ID 为空、图仍有待执行节点、最后消息不是无待执行工具的 AIMessage 时拒绝切换。查询失败、取消或校验失败时，当前 messages、config 保持不变。此方法要求与 run、arun 及其他切换顺序调用，不提供并发切换或中断执行恢复。
-
-CLI 的 /resume N 在选择当前目录的合法索引后调用该方法，成功后由 CLI 调用 Store 更新时间并同步入口局部 ID 和登记状态，不再次插入已存在的索引；直接调用 Runtime 不读写会话索引。它不替换模型、工具或其他初始化依赖。交互与失败路径见 [CLI /resume 测试说明](tests/resume.md)。
-
-### 会话索引
-
-SessionStore(db_path) 独立管理预先创建的 sessions 表，用 thread_id 关联检查点恢复，用 workspace_path 区分会话创建目录。构造函数只保存规范化路径，不读默认配置、不自动建库或建表。四个异步方法 insert_session、get_session、list_sessions、update_session_updated_at 各自打开并关闭连接；写入提交，缺文件、缺表和重复 ID 的数据库异常原样传播。连接使用 URI 的 mode=rw，禁止文件缺失时静默创建空库。
-
-查询返回 SessionRecord，包含 thread_id、workspace_path、title、created_at、updated_at。工作目录统一 expanduser 和 resolve 后精确匹配，列表按更新时间降序、创建时间降序、ID 升序排列。目录不自动归并到 Git 根目录，不扫描所有检查点推导会话列表。表结构、隔离及边界见 [SQLite 会话索引测试说明](tests/store.md)。
-
-当前 CLI 实例化 Store 并在首次回合前登记索引，与 Checkpointer 显式使用同一个文件路径，在一个数据库中维护各自的表。通过 /resume 列表与选择接入 Runtime 恢复，但不提供 /sessions 别名、标题更新、会话删除，仅在切换成功后主动刷新目标 updated_at，普通回合暂不自动刷新。更新时间方法只改目标修改时间，使用 UTC 秒格式，提交后返回新值，不存在的 ID 抛 ValueError。CLI 的 /resume 页面沿用 Store 最近修改优先的顺序，编号 0 始终为当前会话。索引与检查点之间没有跨模块的原子事务，不能用元数据记录推断执行成功或状态已回滚。
+SessionRecord 包含 thread_id、workspace_path、title、created_at、updated_at；更新时间仅改目标 UTC 秒时间，不修改创建时间。Manager 在显式激活及成功轮次后刷新；只列出或读取历史不刷新。HTTP 显式创建和 CLI 延迟创建不同，但均经 Manager 登记。没有索引/检查点跨表事务，索引存在不证明运行成功；仅有索引、无检查点是合法空会话。表结构与边界见[索引测试](tests/store.md)。
 
 ## 5. Agent、流和输出
 
@@ -227,15 +188,15 @@ SessionStore(db_path) 独立管理预先创建的 sessions 表，用 thread_id �
 | `stream.output` / `await stream.output()` | 同步属性 / 异步方法；最终状态字典，`["messages"]` 含此次输入历史与执行产生的完整消息 |
 | `context=` | 运行上下文；不是自动发送给模型的对话历史 |
 
-Runtime 通过 event_handler 接收函数输出 RunEvent（助手文本开始/增量/结束、工具开始/增量/完成/失败、运行失败），默认交给 events.print_event 终端渲染，保留 CLI 行为；传入 None 关闭过程正文输出，但仍消费全部通道并校验终态。接收函数为同步快速回调，不支持等待网络或异步背压；这些事件不是持久化消息，也不是已经实现的 SSE 协议。switch_session(display=False) 可独立关闭恢复后的历史展示，默认仍展示以兼容 CLI。Skills 诊断仍写 stderr。
+Conversation 通过可选 event_handler 发送 RunEvent（助手文本开始/增量/结束、工具开始/增量/完成/失败、运行失败及 Skills 诊断），默认 None 完全静默。events.py 只定义数据与回调类型；CLI 的 terminal.print_event 渲染终端，历史由 terminal.display_history 单独展示。回调仅限快速同步操作，不支持网络等待或异步背压；事件不是持久化消息，也不是 SSE。Manager 每轮单独绑定回调，不会把 CLI 渲染泄漏到同实例后续 HTTP 操作。
 
-runtime 同步路径用 `interleave("messages", "tool_calls")` 同时订阅模型和工具通道。当前依赖的异步流没有 `interleave()`，异步路径先订阅两个通道，再通过两个消费任务并行读取；完成后检查原始异常，退出前取消并等待未完成的消费任务，再关闭流。两种路径都显示助手文本、工具参数、工具增量、最终结果和错误，工具终态展示规则共用。不要先耗尽一个通道，再期望未订阅的另一个通道回放全过程。
+Conversation 同步路径用 `interleave("messages", "tool_calls")` 同时订阅模型和工具通道。当前依赖的异步流没有 `interleave()`，异步路径先订阅两个通道，再通过两个消费任务并行读取；完成后检查原始异常，退出前取消并等待未完成的消费任务，再关闭流。两种路径都显示助手文本、工具参数、工具增量、最终结果和错误，工具终态展示规则共用。不要先耗尽一个通道，再期望未订阅的另一个通道回放全过程。
 
 处理单个模型或工具句柄时的内部循环会继续推进执行，所以显示逻辑不是所有原始事件严格全序的回放。需要全局原始顺序时应另行设计事件级渲染，而不是把快照全部打印出来。
 
-过程通知不等于消息：每段 token、工具开始提示、进度片段不一定独立保存在历史中；最终工具返回值才由底层形成工具消息。工具执行由 LangGraph 完成，runtime 不根据调用请求再次手动执行。
+过程通知不等于消息：每段 token、工具开始提示、进度片段不一定独立保存在历史中；最终工具返回值才由底层形成工具消息。工具执行由 LangGraph 完成，Conversation 不根据调用请求再次手动执行。
 
-v3 仍是实验性协议。session.py 在模块入口启动之前过滤对应的实验性提示；过滤 LangChainBetaWarning 只影响显示，不保证升级兼容。
+v3 仍是实验性协议。cli.app.main() 在交互启动前过滤对应的实验性提示；过滤 LangChainBetaWarning 只影响显示，不保证升级兼容。
 
 ## 6. 工具与文件范围
 
@@ -254,9 +215,9 @@ Bash 返回 exit_code、stdout、stderr、timed_out、truncated。非零退出�
 
 工具有当前用户的文件和进程权限，可产生不可逆副作用。目录解析、输入校验和超时都不等于沙箱；不向不可信调用方承诺隔离、审批或全面的后台进程管理。
 
-### Skills 发现能力与 Runtime 接入
+### Skills 发现能力与 Conversation 接入
 
-`skills.py` 提供独立能力，由 Runtime 在初始化时调用。`session.py` 加载基础提示词并组装模型、内置工具和会话；创建会话时默认 Skills 目录与基础提示词合并为初始 SystemMessage，随后随历史传入模型：
+`skills.py` 提供独立能力，由 Conversation 在空会话初始化时调用。bootstrap 加载基础提示词，Manager 将其与 Skills 搜索目录传入 Conversation，合并为初始 SystemMessage；恢复已有历史不重新发现 Skills：
 
 - `discover_skills(roots: Sequence[Path]) -> SkillDiscoveryResult` 只扫描调用方传入的目录，递归寻找 `SKILL.md`，不默认搜索 HOME/cwd。返回 `skills` 和字符串 `diagnostics`。
 - `SkillDefinition` 保存名称、描述和文件绝对路径，不保存正文。使用安全 YAML 加载，校验非空字符串、名称格式及名称/描述长度，忽略额外字段的运行时语义；接受 UTF-8 BOM 和多行描述。
@@ -270,20 +231,18 @@ Bash 返回 exit_code、stdout、stderr、timed_out、truncated。非零退出�
 
 | 变更目标 | 优先修改 | 回归依据 |
 | --- | --- | --- |
-| 输入、退出、CLI 组装 | session.py | [Session 与配置测试](tests/session-and-config.md) |
-| 历史、返回文本、工具展示、会话 ID | runtime.py | [Runtime 测试](tests/runtime.md) |
-| SQLite 会话元数据、按目录列出会话 | store.py | [SQLite 会话索引测试](tests/store.md) |
-| 配置路径、认证字段、目录校验 | settings.py、session.py | Session 与配置测试 |
-| 增加提供商 | ai/models/、models_manager.py；必要时调整认证解析 | [模型测试](tests/ai-models.md) |
+| 输入、退出、命令和终端展示 | cli/app.py、commands.py、terminal.py | [CLI 测试](tests/cli.md)、[/resume 测试](tests/resume.md) |
+| 共用资源组装和配置 | bootstrap.py、configuration.py；入口各自 settings.py | [配置与组装测试](tests/session-and-config.md)、CLI/HTTP 测试 |
+| 会话加载、互斥、失败与关闭 | session_manager.py | [HTTP/Manager 测试](tests/api.md)、CLI 测试 |
+| 历史、返回文本和过程事件 | conversation.py、events.py | [Conversation 测试](tests/conversation.md) |
+| SQLite 会话元数据 | store.py | [会话索引测试](tests/store.md) |
+| 增加提供商 | ai/models/、models_manager.py、bootstrap.py | [模型测试](tests/ai-models.md) |
 | 底层调用参数、协议、中断/恢复 | agent/agent.py | [Agent 测试](tests/agent.md) |
-| 新工具或工具契约 | tools/、tools_manager.py | [工具测试](tests/tools.md) |
-| 基础系统提示词 | prompts/system.md、prompts/__init__.py、session.py | [提示词测试](tests/prompts.md)、[Session 测试](tests/session-and-config.md) |
-| Skill 发现与目录提示词 | skills.py；Runtime 初始化消费目录 | [Skills 测试](tests/skills.md)、[Runtime 测试](tests/runtime.md) |
+| 工具或 Skill | tools/、tools_manager.py、skills.py | [工具测试](tests/tools.md)、[Skills 测试](tests/skills.md) |
+| 基础系统提示词 | prompts/system.md、prompts/__init__.py、bootstrap.py | [提示词测试](tests/prompts.md)、CLI 集成测试 |
 
-当前不提供：OAuth 登录/刷新、启动时自动恢复上次会话及 /sessions 别名、Runtime 的图中断恢复流程、工具沙箱/审批、Bash 实时增量输出、自动启用的 AST 工具发现。
+当前不提供 OAuth 登录/刷新、自动恢复上次会话、/sessions 别名、图中断恢复流程、工具沙箱/审批、Bash 实时增量输出或自动 AST 工具发现。HTTP 尚无 SSE、后台任务、取消接口和多用户。底层 Agent 的中断测试通过，不代表应用入口已实现暂停恢复。
 
-底层 Agent 的中断测试通过，不代表 CLI Session 已实现暂停恢复。开发时把这些层次的支持范围分别核对，不从底层参数透传推断上层功能已经完成。
+源码跟踪注意：当前 .gitignore 的 agent/ 是目录名规则，会匹配 src/omt/agent/。若磁盘可读却未出现在 Git 状态中，运行 git check-ignore -v <path>；不要为提交源码而取消敏感配置忽略保护，更不要提交认证文件。
 
-另有源码跟踪风险：当前 `.gitignore` 的 `agent/` 是目录名规则，会匹配 `src/omt/agent/`。若源码在磁盘可读却未出现在 Git 状态中，运行 `git check-ignore -v <path>` 核对；未经明确变更不要顺手修改忽略规则，更不要提交用户认证文件。
-
-测试执行方式与配置隔离要求见 [测试规范与索引](tests/README.md)。
+测试执行方式和配置隔离要求见[测试规范与索引](tests/README.md)。

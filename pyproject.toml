@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
-omt = "omt.coding_agent.session:session"
+omt = "omt.cli.app:main"
 omt-api = "omt.api.app:main"
 
 [tool.pytest.ini_options]

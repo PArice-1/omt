@@ -2,22 +2,20 @@
 
 ## 对象与目的
 
-- 源码：[session.py](../../src/omt/coding_agent/session.py)，调用 [store.py](../../src/omt/coding_agent/store.py) 与 [runtime.py](../../src/omt/coding_agent/runtime.py) 的公开接口。
-- 测试：[test_resume.py](../../tests/coding_agent/test_resume.py)。
-- 保证 /resume 只操作当前启动目录的会话，不把命令发送给模型或写成新会话标题；展示编号与恢复的 thread_id 一致，切换成功后不重复登记或污染其他会话历史。
-- Store 的 get_session(thread_id) 仍是单条元数据查询，列表通过 list_sessions(workspace_path) 获取；完整消息由 switch_session() 从 Checkpointer 加载并展示，不在索引表中重建。
+- 源码：[cli/commands.py](../../src/omt/cli/commands.py)、[cli/app.py](../../src/omt/cli/app.py)，通过 [SessionManager](../../src/omt/coding_agent/session_manager.py) 查询和激活会话。
+- 测试：[test_resume.py](../../tests/cli/test_resume.py)，由旧 tests/coding_agent/test_resume.py 迁入 CLI 模块。
+- 防止命令被当作用户消息、编号与 ID 错配、跨目录恢复、失败切换污染当前选择，以及重复登记旧会话。
 
-## 交互契约
+## 交互契约与变更
 
-命令识别与处理从 asession() 提取为异步 _check_user_input()：返回 (action, restored_session)，action 为 run（普通请求）、handled（命令已处理）或 exit（退出）；只有恢复成功才返回 SessionRecord。编号字典通过 clear/update 原地更新，asession 仍负责读取输入、根据恢复记录同步 ID 与登记状态、登记普通请求并执行 arun。命令检查先于索引登记和模型执行，测试通过公开 session() 驱动，不依赖内部函数调用次数。
+handle_command 返回 run / handled / exit，并只在 Manager.open_session 成功后更新 CliState.current；run_cli 驱动输入、延迟登记和 Manager.run，不直接访问 Store 或 Conversation。
 
-- resume 是 /resume 的无斜杠别名，两者共用列表、编号校验和恢复分支，支持首尾空白与大小写混合。兼容性变化：以独立词 resume 开头的输入现在保留为 CLI 命令，即使参数无效也不再作为普通用户消息交给模型；resume-help 等不同词仍按普通输入处理。
-- /resume 展示 number、title、updated_at 三列。0 始终是当前会话，标题追加“当前”；其余记录排除当前 ID，沿用 Store 最近修改优先的顺序：updated_at 降序，同时间按 created_at 降序和 ID 升序。根据需求由创建时间改为上次修改时间，页面不再另按创建时间排序。
-- 当前会话尚未执行普通请求时也有编号 0，显示“新对话”和启动时的 UTC 时间，但不写占位索引。空目录仍可显示当前会话。标题中的换行和空白合并为单行，空标题显示“未命名对话”。
-- /resume N 只接受最近一次已显示列表中的正数编号；0 提示无需恢复，其他无效编号、非整数或多余参数均提示用法，不执行 Agent。命令支持首尾空白、命令名忽略大小写。
-- 编号绑定该次展示的 thread_id。列表显示后新增记录不会静默改变编号含义；选择时通过 get_session 再查记录存在性与目录归属。
-- 先 await switch_session，成功后才调用 Store.update_session_updated_at 刷新目标记录，返回的 SessionRecord 带新 updated_at，再同步 CLI 局部 thread_id、修改时间与已登记标记，不再 insert_session，也不改 created_at。旧编号映射清空，下一次切换需重新 /resume，以保证 0 仍表示当前会话。
-- 查询或恢复失败单独提示，不执行新回合、不更改登记状态，也不刷新修改时间；Runtime 对失败切换保持 messages/config 不变。修改时间写入发生在切换之后，若写入失败，则提示“修改时间更新失败，会话已切换”，仍返回恢复记录让入口同步目标 ID 和已登记状态；不能误报恢复失败或继续写到旧会话。记录删除或移出目录时清空旧列表。未完成检查点或只有索引没有状态的会话不能直接追加输入。
+- resume 为 /resume 别名，支持首尾空白与混合大小写；独立词 resume 是保留命令词，无效参数也不会执行模型。resume-help 等仍为普通输入。
+- 列表为 number、title、updated_at；0 为当前选择，其他编号排除当前 ID、沿用最近修改优先排序。未登记的 0 显示“新对话”和启动 UTC 时间，不写占位记录。标题折为单行。
+- 编号只绑定最近展示的 ID。列表后新增记录不改变旧映射；Manager 在激活前重新查索引与目录归属。无效编号、0、格式错误不执行模型。
+- Manager.open_session 校验历史并刷新修改时间，返回 LoadedSession；成功后 CLI 更新当前选择、单独展示历史和警告、清空旧编号。失败保持旧选择，目标删除/移出目录会清空映射。
+- 更新时间失败属于部分失败：提示警告但继续使用已加载目标，不能误写旧 ID。SQLite 查询错误和检查点错误单独提示，不展示底层异常原文。
+- 与旧 CLI 的差别：无检查点的合法索引现在可作为空会话恢复，与 API 一致；已有但未完成检查点仍拒绝。原缺失状态失败用例改为真实未完成检查点，目标是验证失败时不切换。成功回合现在也由 Manager 更新时间，不仅恢复时更新；列表查询仍不更新时间。
 
 ## 场景
 
@@ -30,7 +28,7 @@
 | 无效编号 | /resume 和 resume 两种形式下的 0、负数、越界、字母、小数、额外参数、isdigit 为真但不能 int 转换的字符 | 提示当前会话、编号无效或用法，不显示历史、不执行模型、不写新索引，也不刷新旧修改时间 | test_resume_invalid_or_current_numbers_do_not_execute_or_register |
 | 未先查看列表 | 目录有历史，但直接 /resume 1 或 resume 1 | 提示先查看列表，不擅自推断编号 | test_resume_requires_a_displayed_list_before_selecting_a_number |
 | 记录失效 | 展示后，记录被删除或 workspace_path 改为其他目录 | get_session 复查拒绝，不展示旧状态、不执行模型，不登记当前空会话 | test_resume_revalidates_selected_record_before_switching |
-| 检查点缺失 | 历史有索引但没有状态；恢复失败后输入普通问题 | 提示恢复失败，当前新会话仍可登记并执行，目标索引及修改时间保持原样 | test_resume_failed_switch_keeps_current_id_and_registration_state |
+| 检查点未完成 | 索引存在，检查点只有待完成用户输入；恢复失败后输入普通问题 | 提示恢复失败，当前新会话仍可登记并执行，目标索引及修改时间保持原样 | test_resume_failed_switch_keeps_current_id_and_registration_state |
 | SQLite 查询错误 | 列表或单条记录查询抛 OperationalError | 显示查询/恢复错误，不执行模型、不登记额外会话 | test_resume_database_errors_are_reported_without_execution |
 | 更新时间写入失败 | 已恢复目标后，更新修改时间抛 SQLite 错误，再提交普通输入并查看列表 | 明确提示部分失败，目标仍为当前 0，不重复登记，继续请求写入目标检查点，修改时间保持旧值 | test_resume_timestamp_update_failure_keeps_restored_session_usable |
 | 空列表 | 当前目录无索引，使用 /resume 或 resume 查看列表，再输入 /resume 0 | 仅显示当前 0，不创建数据库记录 | test_resume_empty_directory_displays_only_current_without_creating_index |
@@ -40,21 +38,21 @@
 
 ## 隔离方式
 
-共享 [conftest.py](../../tests/coding_agent/conftest.py) 将 settings.root、cwd 指向 tmp_path 并清理设置缓存。resume_db fixture 显式创建临时 SQLite 与 sessions 表，替换导入时固定的 session.db_path。配置、模型初始化与 PromptSession 由本地替身提供；异步 Agent 工厂使用 FakeListChatModel 和真实 AsyncSqliteSaver，不发现或启动 MCP 服务，不读取真实凭据。
+[CLI conftest](../../tests/cli/conftest.py) 同时隔离 settings.root、cwd 和配置环境变量，前后清理缓存。resume_db 显式建立 tmp_path 下 SQLite 与 sessions 表，注入真实 Manager/Agent/AsyncSqliteSaver，只使用本地 FakeListChatModel 与关闭的 Skills/MCP。输入和 PromptSession 用替身，不触碰用户终端或凭据。
 
-历史索引由真实 SessionStore 写入，固定创建/更新时间避免依赖 sleep；历史检查点通过真实图 aupdate_state 写入。交互结束后重新打开 Saver 读取 messages，验证正确 ID、上下文和命令隔离。只有数据库错误注入时替换对应 Store 查询方法；正常恢复使用真实 Runtime.switch_session 和 display_history。
+正常路径使用真实 Store、检查点和 Manager；历史通过图 aupdate_state 写入。固定元数据时间避免 sleep。交互后重新打开 Saver，核对原 ID、上下文、命令未入历史。只有 SQLite 错误注入才替换 Store 查询/更新时间方法；编号失效测试真实更新或删除临时记录。
 
 ## 执行
 
 ```bash
-uv run pytest -q tests/coding_agent/test_resume.py --tb=no
-uv run pytest -q tests/coding_agent/test_resume.py tests/coding_agent/test_session.py tests/test_runtime_switch.py --tb=no
-basedpyright --pythonpath .venv/bin/python src/omt/coding_agent/session.py tests/coding_agent/test_resume.py
+uv run pytest -q tests/cli/test_resume.py --tb=no
+uv run pytest -q tests/cli tests/coding_agent/test_conversation_history.py tests/api --tb=no
+basedpyright --pythonpath .venv/bin/python src/omt/cli src/omt/coding_agent/session_manager.py tests/cli/test_resume.py
 ```
 
 ## 覆盖限制
 
-- 交互通过异步输入替身驱动，不验证真实终端的表格宽度或键盘编辑；真实 PromptSession 和 SIGINT 另见 [Session 测试](session-and-config.md)。
-- 不验证进程重启后自动恢复：启动仍创建新会话，必须显式选择历史。不支持工具执行中的暂停恢复、会话删除或重命名；本次只在切换成功后刷新 updated_at，不在普通回合结束后自动刷新，也不在查询列表时刷新。
-- 目录筛选是工作目录归属规则，不是多用户权限控制；外部程序可修改数据库，不保证查询与切换之间的跨连接原子事务。
-- 列表时间按现有文本字段排序，外部写入必须采用一致的 UTC 格式；标题不是任意终端控制字符的安全过滤器。
+- 交互由异步输入替身驱动，不证明真实终端宽度/键盘编辑；真实内存 PromptSession 和 SIGINT 见 [CLI 测试](cli.md)。
+- 启动不自动恢复上次会话；不支持图中断恢复、删除/重命名命令或检查点修复。
+- 目录归属不是多用户权限或沙箱；不保证外部进程修改索引与检查点时的跨连接原子性。
+- 时间按文本字段排序，外部写入须统一 UTC 格式；标题折行不等于过滤任意终端控制字符。

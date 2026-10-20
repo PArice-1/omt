@@ -22,7 +22,8 @@ from pydantic import Field, SecretStr, ValidationError
 
 from omt.agent.agent import Agent
 from omt.api.app import create_app
-from omt.api.settings import ApiSettings, StdioServerSettings, HttpServerSettings
+from omt.api.settings import ApiSettings
+from omt.coding_agent.configuration import StdioServerSettings, HttpServerSettings
 from omt.coding_agent import bootstrap, settings as settings_module
 from omt.ai.model import Model
 from omt.coding_agent.session_manager import SessionError, SessionManager
@@ -385,3 +386,56 @@ def test_mcp_configuration_is_explicit_and_secrets_are_not_rendered(
     with pytest.raises(ValidationError) as raised:
         _ = ApiSettings(access_token=SecretStr("short-private-token"))
     assert "short-private-token" not in str(raised.value)
+
+
+def test_cli_and_http_share_one_manager_without_leaking_terminal_output(
+    options: ApiSettings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.input import DummyInput
+    from prompt_toolkit.output import DummyOutput
+    from omt.cli.app import run_cli
+    from omt.cli.settings import CliSettings
+
+    async def execute() -> None:
+        async with AsyncSqliteSaver.from_conn_string(str(options.db_path)) as saver:
+            model = LocalModel(responses=[AIMessage(content="CLI 回答"), AIMessage(content="HTTP 回答")])
+            manager = SessionManager(
+                Agent(model, checkpointer=saver), SessionStore(options.db_path),
+                workspace_path=options.workspace_path, system_prompt="共享规则", skill_roots=[],
+            )
+
+            @asynccontextmanager
+            async def http_factory(config: ApiSettings) -> AsyncGenerator[SessionManager]:
+                # 此测试由最外层拥有资源；两个入口只借用同一实例。
+                yield manager
+
+            @asynccontextmanager
+            async def cli_factory(config: CliSettings) -> AsyncGenerator[SessionManager]:
+                yield manager
+
+            app = create_app(options, manager_factory=http_factory)
+            try:
+                async with app.router.lifespan_context(app):
+                    async with AsyncClient(transport=ASGITransport(app), base_url="http://local.test") as client:
+                        response = await client.post("/api/v1/sessions", json={}, headers=HEADERS)
+                        session_id = response.json()["session_id"]
+                        reader = AsyncMock(side_effect=["/resume", "/resume 1", "CLI 问题", "/exit"])
+                        monkeypatch.setattr("omt.cli.app.read_input", reader)
+                        await run_cli(
+                            CliSettings(db_path=options.db_path, workspace_path=options.workspace_path),
+                            manager_factory=cli_factory,
+                            terminal=PromptSession(input=DummyInput(), output=DummyOutput()),
+                        )
+                        assert capsys.readouterr().out.count("CLI 回答") == 1
+                        response = await client.post(
+                            f"/api/v1/sessions/{session_id}/runs", json={"message": "HTTP 问题"}, headers=HEADERS,
+                        )
+                        assert response.status_code == 200 and response.json()["answer"] == "HTTP 回答"
+                        assert capsys.readouterr().out == ""
+                        history = await client.get(f"/api/v1/sessions/{session_id}/messages", headers=HEADERS)
+                        assert [m["text"] for m in history.json()] == ["CLI 问题", "CLI 回答", "HTTP 问题", "HTTP 回答"]
+            finally:
+                await manager.aclose()
+    asyncio.run(execute())

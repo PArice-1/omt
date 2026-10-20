@@ -26,7 +26,7 @@ CliSettings 使用 `OMT_CLI_` 前缀，与 `OMT_API_` 独立：
 | `DB_PATH` | `~/.omt/agent/state/omt.sqlite`，文件与 sessions 表须存在 |
 | `WORKSPACE_PATH` | 启动 cwd；规范化后必须等于实际 cwd，不执行 chdir |
 | `MAX_CONCURRENT_RUNS` | `1`；共用 Manager 的 run 容量，不是工具并发数；CLI 本身顺序输入 |
-| `SKILL_ROOTS` | 未配置时使用用户和项目 Skills；JSON 数组 `[]` 关闭发现 |
+| `SKILL_ROOTS` | 默认 `["~/.agents/skills"]`（启动时展开为绝对路径）；JSON 数组可替换，`[]` 关闭发现 |
 | `MCP_SERVERS` | 为兼容保留旧 CLI 的 knowledge stdio 配置；JSON 对象可替换，`{}` 关闭 |
 
 现有 knowledge 默认指向本机 `/home/laterain/Projects/Agent/rag-mcp` 的虚拟环境与 `rag_mcp.server`，不是可移植部署配置。其他机器应显式替换或关闭；HTTP 默认不启用它。MCP 字段与类型见 [HTTP 启动配置](api.md#启动配置)，但 CLI 使用自己的环境变量前缀。

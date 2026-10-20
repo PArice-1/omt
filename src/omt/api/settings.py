@@ -1,6 +1,7 @@
 """HTTP 启动配置；会话字段复用核心配置，访问令牌只属于 HTTP。"""
 
 from typing import ClassVar
+from pathlib import Path
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import SettingsConfigDict
@@ -15,6 +16,7 @@ class ApiSettings(SessionSettings):
     )
 
     # 默认空值仍经过校验，未配置令牌时启动失败，不存在匿名回退。
+    skill_roots: list[Path] | None = Field(default=[Path("~/.agents/skills").expanduser().resolve()])
     access_token: SecretStr = Field(default_factory=lambda: SecretStr(""))
 
     @field_validator("access_token")

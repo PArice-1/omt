@@ -29,7 +29,7 @@ uv run omt-api
 | `DB_PATH` | `~/.omt/agent/state/omt.sqlite`；必须已存在且有 sessions 表 |
 | `WORKSPACE_PATH` | 启动 cwd；规范化后必须与进程 cwd 相同 |
 | `MAX_CONCURRENT_RUNS` | `1`；正整数，满载时立即返回 429，不排队 |
-| `SKILL_ROOTS` | 未配置时依次为用户 Skills 和工作目录 Skills；JSON 数组 `[]` 关闭发现 |
+| `SKILL_ROOTS` | 默认 `["~/.agents/skills"]`（启动时展开为绝对路径）；JSON 数组可替换，`[]` 关闭发现 |
 | `MCP_SERVERS` | 默认 `{}`，不启用 CLI 中的本机硬编码 MCP；JSON 对象，支持 stdio 和 streamable_http |
 
 例如 MCP 可以由服务端配置为：

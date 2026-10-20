@@ -25,4 +25,5 @@ class CliSettings(SessionSettings):
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
         env_prefix="OMT_CLI_", frozen=True, extra="forbid", hide_input_in_errors=True,
     )
+    skill_roots: list[Path] | None = Field(default=[Path("~/.agents/skills").expanduser().resolve()])
     mcp_servers: dict[str, McpServerSettings] = Field(default_factory=_default_mcp_servers)

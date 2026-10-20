@@ -59,7 +59,7 @@ omt 指向 omt.cli.app:main。main() 仅在最外层调用一次 asyncio.run(run
 3. 持有一个 AsyncSqliteSaver，创建 Store 与 Manager。
 4. 退出先 manager.aclose()，取消并等待活跃历史/运行操作，再关闭 Saver 连接。
 
-SessionSettings 共享 db_path、workspace_path、max_concurrent_runs、skill_roots、mcp_servers。ApiSettings 使用 OMT_API_ 且要求访问令牌；CliSettings 使用 OMT_CLI_，不要求也不读取 HTTP 令牌。两者默认数据库均为 ~/.omt/agent/state/omt.sqlite。CLI 为兼容保留既有 knowledge stdio 本机配置，可用 OMT_CLI_MCP_SERVERS={} 禁用或替换；API 默认 MCP 为空，不继承 CLI 的本机路径。模型的三份 JSON 配置仍由 settings.py 读取，与这些启动选项不同。
+SessionSettings 共享 db_path、workspace_path、max_concurrent_runs、skill_roots、mcp_servers。ApiSettings 使用 OMT_API_ 且要求访问令牌；CliSettings 使用 OMT_CLI_，不要求也不读取 HTTP 令牌。两者默认数据库均为 ~/.omt/agent/state/omt.sqlite。当前 CliSettings 和 ApiSettings 均显式将 skill_roots 默认为 ~/.agents/skills；只有使用共用 SessionSettings 且保留 skill_roots=None 时，bootstrap 才回退到 ~/.omt/agent/skills 与 cwd/skills。CLI 为兼容保留既有 knowledge stdio 本机配置，可用 OMT_CLI_MCP_SERVERS={} 禁用或替换；API 默认 MCP 为空，不继承 CLI 的本机路径。模型的三份 JSON 配置仍由 settings.py 读取，与这些启动选项不同。
 
 ### CLI 交互
 

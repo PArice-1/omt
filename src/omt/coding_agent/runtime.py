@@ -46,6 +46,7 @@ class CreateAgentSession:
     初始化时将可选提示词文本与 Skills 目录合并为首条 SystemMessage，空内容不插入。
     默认扫描用户和项目 Skills；传入 skill_roots=[] 可关闭扫描。
     同一份基础提示词不要同时传给 Agent.system_prompt 和本会话，避免重复发送。
+    switch_session() 可从检查点替换为另一段已完成会话；所有操作仅支持顺序调用。
     """
 
     def __init__(
@@ -238,3 +239,61 @@ class CreateAgentSession:
         except Exception as exc:
             print(f"\n[执行失败] {exc}", flush=True)
             raise
+
+    def display_history(self) -> None:
+        """按消息顺序展示当前历史，不输出系统提示词、artifact 或模型元数据。"""
+        messages = [message for message in self.messages if not isinstance(message, SystemMessage)]
+        print("\n[对话历史]", flush=True)
+        if not messages:
+            print("暂无对话历史。", flush=True)
+            return
+
+        for message in messages:
+            if isinstance(message, AIMessage):
+                if message.text:
+                    print(f"[助手] {message.text}", flush=True)
+                for call in message.tool_calls:
+                    print(f"[工具调用] {call['name']}", flush=True)
+                    print(f"  参数：{_format_output(call['args'])}", flush=True)
+            elif isinstance(message, ToolMessage):
+                label = "工具失败" if message.status == "error" else "工具结果"
+                name = message.name or message.tool_call_id
+                print(f"[{label}] {name}\n{_format_output(message)}", flush=True)
+            else:
+                label = "用户" if isinstance(message, HumanMessage) else message.type
+                print(f"[{label}] {_format_output(message)}", flush=True)
+
+    async def switch_session(self, thread_id: str) -> None:
+        """加载目标会话的最新根图检查点，校验后替换历史和配置并打印历史。
+
+        不执行模型或工具，不重新扫描 Skills，不读写会话索引。
+        目标缺失、执行未完成、查询失败或被取消时保留当前会话；异常向外传播。
+        不支持与 run、arun 或另一次切换并发调用，调用方应先等待当前操作结束。
+        """
+        if not thread_id.strip():
+            raise ValueError("thread_id 不能为空")
+
+        config: RunnableConfig = {**self.config}
+        configurable = dict(config.get("configurable", {}))
+        # 切换会话时不能沿用旧快照、子图命名空间或检查点映射。
+        for key in ("checkpoint_id", "checkpoint_ns", "checkpoint_map"):
+            _ = configurable.pop(key, None)
+        configurable["thread_id"] = thread_id
+        config["configurable"] = configurable
+        snapshot = await self.agent.agent.aget_state(config)
+        if snapshot.next:
+            raise RuntimeError("目标会话存在未完成的执行，请先处理恢复")
+        messages: list[AnyMessage] = list(snapshot.values.get("messages", []))
+        if not messages:
+            raise ValueError("目标会话不存在或没有可恢复的 messages")
+        final_message = messages[-1]
+        if not isinstance(final_message, AIMessage) or final_message.tool_calls:
+            raise RuntimeError("目标会话历史未完成，缺少最终 AIMessage")
+
+        # 查询和校验都成功后才更新；保留原始消息及其工具调用、附加数据和 ID。
+        self.messages, self.config = messages, config
+        self.display_history()
+
+    def get_config(self) -> RunnableConfig:
+        """返回当前运行配置；CLI 应在组装时注入 ID，不依赖反向读取来建索引。"""
+        return self.config

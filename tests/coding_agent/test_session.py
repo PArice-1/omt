@@ -2,17 +2,24 @@
 
 import asyncio
 import json
-import signal
+import sqlite3
+import subprocess
+from contextlib import closing
+import sys
+from textwrap import dedent
 from importlib import import_module
 from pathlib import Path
 from typing import Self, override
 from unittest.mock import AsyncMock, Mock
+from uuid import UUID
 
 import pytest
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.fake_chat_models import FakeListChatModel, FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langchain_core.outputs import ChatResult
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from prompt_toolkit import PromptSession
 from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
@@ -24,7 +31,7 @@ from omt.agent.agent import Agent
 from omt.coding_agent.prompts import load_system_prompt
 from omt.coding_agent.session import (
     _aget_user_input,
-    _arun_turn,
+    asession,
     _get_agent,
     _get_model,
     _get_user_input,
@@ -32,6 +39,28 @@ from omt.coding_agent.session import (
     session,
 )
 from omt.coding_agent.settings import Settings, load_settings
+from omt.coding_agent.store import SessionRecord, SessionStore
+
+
+@pytest.fixture(autouse=True)
+def session_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """会话测试只连接临时预建库，不启动真实 MCP Server。"""
+    path = tmp_path / "cli.sqlite"
+    with closing(sqlite3.connect(path)) as connection:
+        _ = connection.execute("""
+            CREATE TABLE sessions (
+                thread_id TEXT PRIMARY KEY NOT NULL,
+                workspace_path TEXT NOT NULL,
+                title TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        connection.commit()
+    module = import_module("omt.coding_agent.session")
+    monkeypatch.setattr(module, "db_path", path)
+    monkeypatch.setattr(module, "get_tools", AsyncMock(return_value=[]))
+    return path
 
 
 @pytest.fixture
@@ -144,10 +173,12 @@ def test_get_model_rejects_unregistered_provider_before_initializing_model(confi
     model_factory.assert_not_called()
 
 
-def test_get_agent_uses_underlying_chat_model_and_builtin_tools(config_dir, model_factory):
+def test_get_agent_uses_underlying_chat_model_and_builtin_tools(
+    config_dir: Path, model_factory: Mock
+) -> None:
     client = _get_model(load_settings())
 
-    agent = _get_agent(client)
+    agent = asyncio.run(_get_agent(client))
 
     assert isinstance(agent, Agent)
     assert agent.model is client.model
@@ -207,8 +238,12 @@ def test_prompt_propagates_cancel_and_eof(control, exception, asynchronous: bool
 
 @pytest.mark.parametrize("exit_command", ["/exit", "/quit", " /EXIT "])
 def test_session_exits_without_sending_exit_command_to_model(
-    config_dir, model_factory, monkeypatch, exit_command
-):
+    config_dir: Path,
+    model_factory: Mock,
+    session_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exit_command: str,
+) -> None:
     module = import_module("omt.coding_agent.session")
     runner = Mock()
     runner_factory = Mock(return_value=runner)
@@ -221,18 +256,22 @@ def test_session_exits_without_sending_exit_command_to_model(
     runner_factory.assert_called_once()
     runner.run.assert_not_called()
     runner.arun.assert_not_called()
+    assert asyncio.run(SessionStore(session_db).list_sessions(config_dir.parent)) == []
 
 
-def test_session_handles_input_cancel_and_eof_and_does_not_print_answer_twice(
-    config_dir, model_factory, monkeypatch, capsys
-):
+def test_session_handles_eof_and_does_not_print_answer_twice(
+    config_dir: Path,
+    model_factory: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     module = import_module("omt.coding_agent.session")
     runner = Mock()
     runner.arun = AsyncMock(return_value="只由 runtime 输出的回答")
     monkeypatch.setattr(module, "CreateAgentSession", Mock(return_value=runner))
     terminal_factory = Mock()
     monkeypatch.setattr(module, "PromptSession", terminal_factory)
-    read_input = AsyncMock(side_effect=[KeyboardInterrupt(), "你好", EOFError()])
+    read_input = AsyncMock(side_effect=["你好", EOFError()])
     monkeypatch.setattr(module, "_aget_user_input", read_input)
 
     session()
@@ -247,6 +286,7 @@ def test_session_handles_input_cancel_and_eof_and_does_not_print_answer_twice(
 def test_session_runs_real_runtime_and_read_tool_without_network(
     config_dir: Path,
     model_factory: Mock,
+    session_db: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -310,6 +350,21 @@ def test_session_runs_real_runtime_and_read_tool_without_network(
         assert messages[0].text == system_text
         assert sum(isinstance(message, SystemMessage) for message in messages) == 1
 
+    async def verify_persistence() -> None:
+        records = await SessionStore(session_db).list_sessions(config_dir.parent)
+        assert len(records) == 1
+        assert records[0].title == "读取说明"
+        config: RunnableConfig = {"configurable": {"thread_id": records[0].thread_id}}
+        async with AsyncSqliteSaver.from_conn_string(str(session_db)) as checkpointer:
+            agent = Agent(model, checkpointer=checkpointer)
+            snapshot = await agent.agent.aget_state(config)
+        assert [message.type for message in snapshot.values["messages"]] == [
+            "system", "human", "ai", "tool", "ai", "human", "ai",
+        ]
+        assert snapshot.values["messages"][-1].text == "继续完成。"
+
+    asyncio.run(verify_persistence())
+
 
 @pytest.mark.usefixtures("config_dir")
 @pytest.mark.parametrize("error", [FileNotFoundError("资源缺失"), ValueError("提示词为空")])
@@ -346,27 +401,27 @@ def test_get_user_input_can_create_its_own_prompt_session(monkeypatch, asynchron
     factory.assert_called_once_with()
 
 
-def test_session_can_continue_after_keyboard_interrupt_during_run(
-    config_dir, model_factory, monkeypatch
-):
+def test_session_ctrl_c_during_input_exits_without_starting_a_turn(
+    config_dir: Path,
+    model_factory: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     module = import_module("omt.coding_agent.session")
-    runner = Mock()
-    async def run_turn(message: str) -> str:
-        if message == "取消本轮":
-            handler = signal.getsignal(signal.SIGINT)
-            assert callable(handler)
-            handler(signal.SIGINT, None)
-            await asyncio.sleep(0)
-        return "下一轮回答"
-
-    runner.arun = AsyncMock(side_effect=run_turn)
+    runner = Mock(arun=AsyncMock())
+    read_input = AsyncMock(side_effect=[KeyboardInterrupt(), "/exit"])
     monkeypatch.setattr(module, "CreateAgentSession", Mock(return_value=runner))
     monkeypatch.setattr(module, "PromptSession", Mock())
-    monkeypatch.setattr(module, "_aget_user_input", AsyncMock(side_effect=["取消本轮", "下一轮", "/exit"]))
+    monkeypatch.setattr(module, "_aget_user_input", read_input)
 
     session()
 
-    assert [call.args for call in runner.arun.await_args_list] == [("取消本轮",), ("下一轮",)]
+    assert read_input.await_count == 1
+    runner.arun.assert_not_awaited()
+    output = capsys.readouterr().out
+    assert "会话结束。" in output
+    assert "已取消本次输入" not in output
+    assert "Ctrl-C 取消" not in output
 
 
 def test_session_allows_retry_after_failed_turn(config_dir, model_factory, monkeypatch):
@@ -410,49 +465,122 @@ def test_session_reuses_one_event_loop_for_input_and_turns(
     assert runner.arun.await_count == 2
 
 
-@pytest.mark.parametrize("outcome", ["success", "failure", "sigint"])
-def test_async_turn_restores_sigint_handler(
-    outcome: str, capsys: pytest.CaptureFixture[str]
-) -> None:
-    async def execute() -> None:
-        previous = signal.getsignal(signal.SIGINT)
-        cleaned = False
+def test_session_sigint_during_execution_exits_and_cleans_up(tmp_path: Path) -> None:
+    # 真实 SIGINT 只发给本测试启动的子进程，不中断 pytest 或用户终端。
+    script = dedent('''\
+        import asyncio
+        import signal
+        import sqlite3
+        from contextlib import closing
+        from pathlib import Path
+        from importlib import import_module
+        from typing import Self
+        from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+        from langchain_core.messages import AIMessage
+        from langchain_core.runnables import RunnableConfig
+        from langchain_core.tools import tool
+        from langgraph.checkpoint.base import BaseCheckpointSaver
+        from omt.agent.agent import Agent
+        from omt.coding_agent.runtime import CreateAgentSession
 
-        async def run_turn(message: str) -> str:
-            nonlocal cleaned
+        class LocalModel(FakeMessagesListChatModel):
+            def bind_tools(self, tools: object, **kwargs: object) -> Self:
+                return self
+
+        @tool
+        async def wait_note() -> str:
+            """等待取消并清理本地异步工具。"""
             try:
-                if outcome == "failure":
-                    raise RuntimeError("本地失败")
-                if outcome == "sigint":
-                    handler = signal.getsignal(signal.SIGINT)
-                    assert callable(handler) and handler is not previous
-                    handler(signal.SIGINT, None)
-                    await asyncio.sleep(0)
-                return "完成"
+                asyncio.get_running_loop().call_soon(signal.raise_signal, signal.SIGINT)
+                await asyncio.Event().wait()
+                return "不应完成"
             finally:
-                cleaned = True
+                print("TOOL_CLEANED", flush=True)
 
-        runner = Mock(arun=AsyncMock(side_effect=run_turn))
-        if outcome == "failure":
-            with pytest.raises(RuntimeError, match="本地失败"):
-                await _arun_turn(runner, "执行")
-        else:
-            await _arun_turn(runner, "执行")
-        assert cleaned
-        assert signal.getsignal(signal.SIGINT) is previous
+        model = LocalModel(responses=[AIMessage(content="", tool_calls=[
+            {"name": "wait_note", "args": {}, "id": "wait"}
+        ])])
+        module = import_module("omt.coding_agent.session")
+        module.db_path = Path.cwd() / "cli.sqlite"
+        module.load_settings = lambda: None
+        module.load_system_prompt = lambda: "本地规则"
+        module._get_model = lambda settings: None
+        conversations: list[CreateAgentSession] = []
 
-    asyncio.run(execute())
-    if outcome == "sigint":
-        assert "本轮已中断" in capsys.readouterr().out
+        async def get_agent(
+            client: object, *, checkpointer: BaseCheckpointSaver[str]
+        ) -> Agent:
+            return Agent(model, tools=[wait_note], checkpointer=checkpointer)
+
+        def create_conversation(
+            agent: Agent, config: RunnableConfig, **kwargs: object
+        ) -> CreateAgentSession:
+            conversation = CreateAgentSession(
+                agent, config, system_prompt="本地规则", skill_roots=[]
+            )
+            conversations.append(conversation)
+            return conversation
+
+        module._get_agent = get_agent
+        module.CreateAgentSession = create_conversation
+        module.PromptSession = lambda: None
+        read_count = 0
+
+        async def read_input(terminal: object) -> str:
+            global read_count
+            read_count += 1
+            assert read_count == 1, "Ctrl-C 后不得开始下一轮输入"
+            return "等待说明"
+
+        module._aget_user_input = read_input
+        module.session()
+        assert read_count == 1
+        conversation = conversations[0]
+        assert [message.type for message in conversation.messages] == ["system"], (
+            "取消回合不得提交内存历史"
+        )
+        with closing(sqlite3.connect(module.db_path)) as connection:
+            rows = connection.execute(
+                "SELECT thread_id, workspace_path FROM sessions"
+            ).fetchall()
+        assert rows == [(
+            conversation.config["configurable"]["thread_id"], str(Path.cwd().resolve())
+        )], "取消前已保存同一 ID 的目录索引"
+        print("INDEX_KEPT", flush=True)
+        print("CLI_RETURNED", flush=True)
+    ''')
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "TOOL_CLEANED" in result.stdout
+    assert "INDEX_KEPT" in result.stdout
+    assert "CLI_RETURNED" in result.stdout
+    assert "会话结束。" in result.stdout
+    assert "本轮已中断" not in result.stdout
+    assert "Traceback" not in result.stderr
 
 
-def test_async_turn_propagates_external_cancellation_and_cleans_up(
+def test_asession_propagates_external_cancellation_and_cleans_up(
+    config_dir: Path,
+    model_factory: Mock,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    module = import_module("omt.coding_agent.session")
+    read_input = AsyncMock(return_value="等待")
+    monkeypatch.setattr(module, "PromptSession", Mock())
+    monkeypatch.setattr(module, "_aget_user_input", read_input)
+
     async def execute() -> None:
         started = asyncio.Event()
         cleaned = asyncio.Event()
-        previous = signal.getsignal(signal.SIGINT)
 
         async def run_turn(message: str) -> str:
             started.set()
@@ -463,13 +591,143 @@ def test_async_turn_propagates_external_cancellation_and_cleans_up(
                 cleaned.set()
 
         runner = Mock(arun=AsyncMock(side_effect=run_turn))
-        task = asyncio.create_task(_arun_turn(runner, "等待"))
+        monkeypatch.setattr(module, "CreateAgentSession", Mock(return_value=runner))
+        task = asyncio.create_task(asession())
         await asyncio.wait_for(started.wait(), timeout=5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=5)
         assert cleaned.is_set()
-        assert signal.getsignal(signal.SIGINT) is previous
+        assert read_input.await_count == 1
 
     asyncio.run(execute())
-    assert "本轮已中断" not in capsys.readouterr().out
+    assert "会话结束。" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("first_turn_fails", [False, True])
+def test_session_registers_once_before_running_with_the_same_thread_and_workspace(
+    config_dir: Path,
+    model_factory: Mock,
+    session_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first_turn_fails: bool,
+) -> None:
+    module = import_module("omt.coding_agent.session")
+    store = SessionStore(session_db)
+    records_at_turn: list[list[SessionRecord]] = []
+    first_prompt = "这是首轮需要记录的完整问题"
+
+    async def run_turn(message: str) -> str:
+        records_at_turn.append(await store.list_sessions(Path.cwd()))
+        if first_turn_fails and len(records_at_turn) == 1:
+            raise RuntimeError("本地执行失败")
+        return "完成"
+
+    runner = Mock(arun=AsyncMock(side_effect=run_turn))
+    factory = Mock(return_value=runner)
+    monkeypatch.setattr(module, "CreateAgentSession", factory)
+    monkeypatch.setattr(module, "PromptSession", Mock())
+    monkeypatch.setattr(
+        module, "_aget_user_input", AsyncMock(side_effect=[first_prompt, "下一轮", "/exit"])
+    )
+
+    session()
+
+    records = asyncio.run(store.list_sessions(config_dir.parent))
+    assert len(records) == 1
+    record = records[0]
+    assert UUID(record.thread_id).version == 4
+    config = factory.call_args.kwargs["config"]
+    assert record.thread_id == config["configurable"]["thread_id"]
+    assert record.workspace_path == str(config_dir.parent.resolve())
+    assert record.workspace_path != str(session_db)
+    assert record.title == first_prompt[:10]
+    assert records_at_turn == [[record], [record]]
+    assert runner.arun.await_count == 2
+
+
+def test_session_retries_registration_after_storage_failure_without_running_agent(
+    config_dir: Path,
+    model_factory: Mock,
+    session_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = import_module("omt.coding_agent.session")
+    original_insert = SessionStore.insert_session
+    attempts: list[str] = []
+
+    async def insert_session(
+        self: SessionStore,
+        thread_id: str,
+        workspace_path: Path,
+        title: str | None = None,
+    ) -> None:
+        attempts.append(thread_id)
+        if len(attempts) == 1:
+            raise sqlite3.OperationalError("测试索引写入失败")
+        await original_insert(self, thread_id, workspace_path, title)
+
+    runner = Mock(arun=AsyncMock(return_value="完成"))
+    monkeypatch.setattr(SessionStore, "insert_session", insert_session)
+    monkeypatch.setattr(module, "CreateAgentSession", Mock(return_value=runner))
+    monkeypatch.setattr(module, "PromptSession", Mock())
+    monkeypatch.setattr(
+        module, "_aget_user_input", AsyncMock(side_effect=["第一次", "重试写入", "/exit"])
+    )
+
+    session()
+
+    runner.arun.assert_awaited_once_with("重试写入")
+    assert len(attempts) == 2
+    assert attempts[0] == attempts[1]
+    records = asyncio.run(SessionStore(session_db).list_sessions(config_dir.parent))
+    assert len(records) == 1
+    assert records[0].title == "重试写入"
+    output = capsys.readouterr().out
+    assert "[会话存储失败]" in output
+    assert "本轮尚未执行" in output
+    assert "本轮执行未完成" not in output
+
+
+def test_session_missing_database_fails_without_creating_it_or_initializing_model(
+    config_dir: Path,
+    model_factory: Mock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = import_module("omt.coding_agent.session")
+    missing = tmp_path / "not-created" / "omt.sqlite"
+    monkeypatch.setattr(module, "db_path", missing)
+
+    with pytest.raises(FileNotFoundError, match="数据库"):
+        session()
+
+    assert not missing.parent.exists()
+    model_factory.assert_not_called()
+
+
+def test_session_missing_table_is_reported_without_running_agent_or_creating_table(
+    config_dir: Path,
+    model_factory: Mock,
+    session_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with closing(sqlite3.connect(session_db)) as connection:
+        _ = connection.execute("DROP TABLE sessions")
+        connection.commit()
+    module = import_module("omt.coding_agent.session")
+    runner = Mock(arun=AsyncMock())
+    monkeypatch.setattr(module, "CreateAgentSession", Mock(return_value=runner))
+    monkeypatch.setattr(module, "PromptSession", Mock())
+    monkeypatch.setattr(module, "_aget_user_input", AsyncMock(side_effect=["问题", "/exit"]))
+
+    session()
+
+    runner.arun.assert_not_awaited()
+    assert "[会话存储失败]" in capsys.readouterr().out
+    with closing(sqlite3.connect(session_db)) as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'sessions'"
+        ).fetchall() == []

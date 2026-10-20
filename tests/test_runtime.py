@@ -210,7 +210,7 @@ def test_session_generates_uuid_thread_id_when_missing(config: RunnableConfig | 
     assert str(UUID(thread_id)) == thread_id
 
 
-def test_session_preserves_external_thread_id_and_other_config():
+def test_session_preserves_external_thread_id_and_other_config() -> None:
     config: RunnableConfig = {
         "configurable": {"thread_id": "existing-session", "workspace": "local-workspace"},
         "tags": ["local-test"],
@@ -222,6 +222,7 @@ def test_session_preserves_external_thread_id_and_other_config():
     session = CreateAgentSession(Agent(FakeListChatModel(responses=["未使用"])), config)
 
     assert session.config == before
+    assert session.get_config() == before
     assert config == before
     assert session.config is not config
     assert session.config.get("configurable", {}) is not config["configurable"]

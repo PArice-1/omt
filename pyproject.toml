@@ -8,11 +8,13 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "aiosqlite>=0.22.1",
     "dotenv>=0.9.9",
     "langchain>=1.4.4",
     "langchain-deepseek>=1.1.1",
     "langchain-mcp-adapters>=0.3.2",
     "langgraph>=1.2.14",
+    "langgraph-checkpoint-sqlite>=3.1.2",
     "loadenv>=0.1.1",
     "prompt-toolkit>=3.0.52",
     "pydantic-settings>=2.15.0",

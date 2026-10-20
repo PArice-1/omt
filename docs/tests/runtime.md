@@ -3,13 +3,13 @@
 ## 对象与目的
 
 - 源码：[runtime.py](../../src/omt/coding_agent/runtime.py)
-- 测试：[test_runtime.py](../../tests/test_runtime.py)
+- 测试：[test_runtime.py](../../tests/test_runtime.py)、[test_runtime_switch.py](../../tests/test_runtime_switch.py)
 
 核心契约是：`run()` / `await arun()` 返回本轮最后回答的字符串；完整消息链留在会话的 `messages`。展示过程、保存历史、返回值三者不能相互替代。
 
 ## 初始消息与 Skills 场景
 
-构造函数保留原有 `agent, config=None` 的位置参数，新增仅关键字参数 `system_prompt: str = ""`、`skill_roots: Sequence[Path] | None = None`。本次沿用 Runtime 首条 SystemMessage 的方式；相同基础提示词不能同时传给 Agent 和 Runtime。外部文件应由调用方读取后传入文本，Runtime 不自行猜测提示词文件位置。
+构造函数保留原有 `agent, config=None` 的位置参数，新增仅关键字参数 `system_prompt: str = ""`、`skill_roots: Sequence[Path] | None = None`。CLI 在 session.py 创建 UUID 和运行配置后主动注入；Runtime 自动补 ID 的行为保留给其他直接调用方，不依赖 Store，也不写会话索引。get_config() 保留并明确返回 RunnableConfig。本次沿用 Runtime 首条 SystemMessage 的方式；相同基础提示词不能同时传给 Agent 和 Runtime。外部文件应由调用方读取后传入文本，Runtime 不自行猜测提示词文件位置。
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
@@ -33,7 +33,7 @@
 | 只有工具请求的模型输出 | 第一条 AIMessage 没有普通文本但有 tool_calls | 不丢弃该消息，工具仍执行和显示，最终回答正常返回 | test_tool_only_model_message_is_saved_and_tool_execution_is_displayed |
 | 文本形态 | 合法用户输入有首尾空白；最后 AI content 是文本或内容块列表 | 输入原样保存，文本只显示一次，返回始终是最后回答的纯文本 | test_run_streams_plain_text_once_and_preserves_original_user_text、test_run_returns_plain_text_when_final_ai_content_is_a_block_list |
 | 生成 ID | config 缺失、空字典、空 configurable | 生成合法 UUID v4 字符串 | test_session_generates_uuid_thread_id_when_missing |
-| 保留外部配置 | 指定 thread_id、workspace、tags、metadata 等 | 现有值保留，配置外层和 configurable 被复制，原始字典不被修改 | test_session_preserves_external_thread_id_and_other_config、test_generating_thread_id_does_not_modify_external_config |
+| 保留外部配置 | 指定 thread_id、workspace、tags、metadata 等 | 现有值保留，get_config() 返回同等内容；配置外层和 configurable 被复制，原始字典不被修改 | test_session_preserves_external_thread_id_and_other_config、test_generating_thread_id_does_not_modify_external_config |
 | ID 生命周期 | 新建两个会话；同一会话执行两轮 | 新会话 ID 不同，同一会话复用 ID 并传入每次 stream_event | test_new_sessions_have_different_thread_ids、test_run_reuses_and_forwards_session_thread_id |
 | 检查点兼容 | Agent 配 InMemorySaver，Session 自动生成 ID | 两轮正常执行，检查点历史与 Session 历史一致，不重复消息 | test_generated_thread_id_works_with_checkpointer_without_duplicate_history |
 | 不配置 config | 只注入 Agent | 仍能完成一轮并保存消息 | test_config_is_optional |
@@ -60,21 +60,44 @@
 | 取消与清理 | 本地异步工具进入等待后取消 arun 任务 | CancelledError 向外传播，工具 finally 执行，无遗留消费任务，初始历史不变，不打印普通执行失败 | test_arun_cancellation_cleans_up_tool_and_consumers_without_committing_history |
 | 同步/异步交替 | 同一会话按 run → arun → run 顺序执行 | 共享完整历史，三轮不丢失、不重复 | test_sync_and_async_turns_share_history |
 
+## 按 thread_id 切换会话
+
+新增公开异步方法 await conversation.switch_session(thread_id) -> None，使用当前 Agent 的 Checkpointer 查询目标根图最新状态。它读取状态，并在替换成功后调用 display_history() 打印更新后的历史，不调用模型或工具，不写 sessions 索引，也不创建新会话。保留现有 tags、metadata、递归限制及其他非检查点配置；复制 configurable 后替换 ID，移除旧 checkpoint_id、checkpoint_ns、checkpoint_map，避免定位旧快照或旧子图。查询和终态校验全部通过才替换 messages、config，不把 snapshot.config 中的具体 checkpoint_id 固定到后续执行。
+
+仅接受非空、已完成且包含最终 AIMessage 的历史；下一节点非空、结尾是工具结果或仍有 tool_calls 时拒绝，避免将中断状态当成可直接追加输入的会话。输入 ID 不裁剪，非空 ID 原样保留。切换不重建消息对象、不重复初始化系统提示词、不重扫 Skills。所有 run、arun、switch_session 操作均要求调用方顺序执行。
+
+同步公开方法 conversation.display_history() 也可单独调用：打印“对话历史”标题后，按存储顺序展示用户、助手文本、工具调用参数和结果，工具 status=error 标为失败；无名称工具结果使用 tool_call_id 标识。空内容的工具请求仍展示调用，文本内容块使用消息的 text，不打印消息对象 repr、系统提示词、artifact 或模型元数据；空列表或只有系统消息时提示暂无历史。展示不修改消息或检查点，不重放执行，也不显示工具开始/完成通知。
+| 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
+| --- | --- | --- | --- |
+| SQLite 最新状态与继续对话 | 目标会话已完成两轮，关闭后重新打开 Saver；当前配置带旧 checkpoint_id、子图命名空间和映射 | 加载第二轮而非旧快照，保留原系统消息和其他运行配置；新配置对象不原地修改切换前的配置或调用方原字典；继续 arun 后只有目标会话历史、新问题和新回答，磁盘状态一致 | test_switch_session_loads_latest_sqlite_history_and_continues_without_duplicates |
+| 原始消息和往返切换 | 内存检查点保存两个会话，目标包含工具请求、artifact、模型用量和 metadata；模型调用替身禁止执行 | 完整字段保留，消息列表是独立副本，ID 原样保存；可切回另一会话而不是追加两份历史，不执行模型 | test_switch_session_preserves_tool_metadata_and_can_switch_back |
+| 空白 ID | 空串或全空白 | ValueError，当前 config 和 messages 对象均保持不变 | test_switch_session_rejects_blank_id_without_changing_current_session |
+| 缺少状态或 Checkpointer | 没配置 Checkpointer，或目标 ID 没有检查点 | ValueError，不更换当前会话，也不创建目标检查点或打印历史 | test_switch_session_missing_state_or_checkpointer_keeps_current_session |
+| 待执行节点 | 真实图在 model 之前中断 | RuntimeError 提示未完成，保留当前会话，不自动恢复工具或模型执行 | test_switch_session_rejects_pending_execution_without_changing_current_session |
+| 不完整消息链 | 检查点最后为 HumanMessage、ToolMessage 或带待执行工具的 AIMessage | RuntimeError，不用中间状态覆盖当前会话 | test_switch_session_rejects_incomplete_history |
+| 查询失败或取消 | 状态查询抛 OSError 或 CancelledError | 原异常原样传播，当前 config 和 messages 对象均不变，不打印历史 | test_switch_session_query_error_or_cancellation_keeps_current_session |
+| 成功切换后展示 | 真实检查点包含多行用户输入、文本块、空文本工具请求、成功/失败工具结果及内部字段 | 更新后按顺序各展示一次，工具名称缺失时回退到调用 ID；不混入旧实例消息或内部字段；不执行模型、不改写内存及检查点消息 | test_switch_session_displays_updated_history_in_order_without_internal_metadata |
+| 单独展示空历史 | messages 为空或仅有 SystemMessage | 标题打印一次，提示暂无历史，不泄露系统提示词，不改变 messages | test_display_history_handles_empty_or_only_system_messages |
+
 ## 隔离方式
 
 真实 Agent 图搭配本地假模型和临时定义的工具；工具进度通过 ToolRuntime.emit_output_delta 产生。模型输入被记录以核对第二轮确实获得历史，而非仅检查本地列表长度。只有缺失终态等难以从正常图得到的场景使用流/方法替身。
 
-本组不读取 Settings/auth 文件或真实模型。模块级自动 fixture 同时将 settings.root 指向 tmp_path/.omt、将 cwd 切换到 tmp_path，因此默认用户/项目 Skills 都被隔离，不读取本机 Skills。测试完成由 monkeypatch 恢复路径。
+本组不读取 Settings/auth 文件或真实模型。test_runtime.py 的模块级自动 fixture 同时将 settings.root 指向 tmp_path/.omt、将 cwd 切换到 tmp_path，因此默认用户/项目 Skills 都被隔离，不读取本机 Skills。测试完成由 monkeypatch 恢复路径。
+
+切换测试显式传入 skill_roots=[]，不扫描默认目录；SQLite 数据库只在 tmp_path 创建，不使用应用配置路径。正常、缺失和中断状态用真实 InMemorySaver 或 AsyncSqliteSaver；仅查询 I/O 错误和取消使用 aget_state 替身，完整历史不靠 mock 拼装。
 
 ## 执行
 
 ```bash
-uv run pytest -q tests/test_runtime.py --tb=no
+uv run pytest -q tests/test_runtime.py tests/test_runtime_switch.py --tb=no
 ```
 
 ## 覆盖限制
 
-- 不证明磁盘持久化、进程重启恢复或图中断恢复已完成。
+- SQLite 切换测试验证关闭并重新打开连接后可加载完整历史并继续执行；CLI /resume 选择另见 [恢复交互测试](resume.md)。这些测试不证明启动自动恢复或真正的跨进程重启链路，图中断恢复仍不属于 switch_session 功能。
+- Runtime 切换不验证工作目录访问权限、不修改 sessions 元数据或 CLI 局部登记变量；CLI /resume 在调用前复查目录归属，成功后同步入口状态，避免重复登记旧会话。
+- 历史展示不是敏感信息过滤器：用户/助手文本、工具参数与可显示结果按原内容输出；不验证多媒体渲染或真实终端排版。终端写入错误不回滚已经完成的会话切换。
 - UUID 测试只验证格式、实例差异和复用，不构成持久化方案。
 - “失败保留旧历史”只指 Session 已提交的内存列表，不表示工具副作用或外部检查点自动回滚。
 - 输出顺序验证针对确定的本地执行链，不验证所有并发工具或原始事件的全局时间顺序；异步两个消费任务的打印顺序不作全局全序保证。

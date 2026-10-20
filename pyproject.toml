@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.22.1",
     "dotenv>=0.9.9",
+    "fastapi[standard]>=0.150.0",
     "langchain>=1.4.4",
     "langchain-deepseek>=1.1.1",
     "langchain-mcp-adapters>=0.3.2",
@@ -24,6 +25,7 @@ dependencies = [
 
 [project.scripts]
 omt = "omt.coding_agent.session:session"
+omt-api = "omt.api.app:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

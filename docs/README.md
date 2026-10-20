@@ -1,11 +1,12 @@
 # OMT 文档导航
 
-OMT 当前是一个基于 LangChain/LangGraph 的同步 Coding Agent CLI。先理解“组装入口、会话状态、执行图”分别由谁负责，再修改实现。
+OMT 当前是一个基于 LangChain/LangGraph 的异步 Coding Agent CLI，同时提供本机非流式 FastAPI 入口并保留同步调用能力。先理解“组装入口、会话状态、执行图”分别由谁负责，再修改实现。
 
 ## 按任务阅读
 
 | 要做的事 | 先读 | 再看源码 |
 | --- | --- | --- |
+| 启动或调用 HTTP、调整会话管理 | [HTTP 使用说明](api.md)、[HTTP 测试](tests/api.md)、[架构说明](architecture.md) | [api/](../src/omt/api/)、[session_manager.py](../src/omt/coding_agent/session_manager.py) |
 | 理解架构，调整交互或 Session | [架构说明](architecture.md) | [session.py](../src/omt/coding_agent/session.py)、[runtime.py](../src/omt/coding_agent/runtime.py) |
 | 调整认证、配置路径或默认模型 | [架构说明](architecture.md)、[Session 与配置测试](tests/session-and-config.md) | [settings.py](../src/omt/coding_agent/settings.py)、session.py |
 | 调整模型初始化或增加提供商 | [模型测试](tests/ai-models.md)、架构说明 | [model.py](../src/omt/ai/model.py)、[models_manager.py](../src/omt/ai/models_manager.py) |

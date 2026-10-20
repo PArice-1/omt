@@ -1,9 +1,8 @@
 """同步/异步 Agent 会话：执行一轮对话、显示过程，并保留完整消息历史。"""
 
 import asyncio
-import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -13,7 +12,6 @@ from langchain_core.language_models.chat_model_stream import ChatModelStream
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
-    BaseMessage,
     HumanMessage,
     SystemMessage,
     ToolMessage,
@@ -24,15 +22,7 @@ from omt.agent.agent import Agent
 
 from . import settings
 from .skills import discover_skills, render_skills_prompt
-
-
-def _format_output(value: object) -> str:
-    """只格式化展示内容，不把消息元数据打印到终端，也不修改原始结果。"""
-    if isinstance(value, BaseMessage):
-        return value.text or _format_output(value.content)
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, default=str)
+from .events import RunEvent, format_output as _format_output, print_event
 
 
 class CreateAgentSession:
@@ -47,6 +37,7 @@ class CreateAgentSession:
     默认扫描用户和项目 Skills；传入 skill_roots=[] 可关闭扫描。
     同一份基础提示词不要同时传给 Agent.system_prompt 和本会话，避免重复发送。
     switch_session() 可从检查点替换为另一段已完成会话；所有操作仅支持顺序调用。
+    event_handler 默认使用终端渲染；传入 None 静默执行，传入函数接收结构化过程事件。
     """
 
     def __init__(
@@ -56,7 +47,9 @@ class CreateAgentSession:
         *,
         system_prompt: str = "",
         skill_roots: Sequence[Path] | None = None,
+        event_handler: Callable[[RunEvent], None] | None = print_event,
     ) -> None:
+        self._event_handler: Callable[[RunEvent], None] | None = event_handler
         self.agent: Agent = agent
         self.messages: list[AnyMessage] = self._prepare_messages(system_prompt, skill_roots)
         # 复制需要修改的两层字典，避免向调用者的原始配置写入 thread_id。
@@ -88,6 +81,10 @@ class CreateAgentSession:
             return []
         return [SystemMessage(content="\n\n".join(parts))]
 
+    def _emit(self, event: RunEvent) -> None:
+        if self._event_handler is not None:
+            self._event_handler(event)
+
     def _display_agent_run(
         self,
         messages: list[AnyMessage],
@@ -107,22 +104,18 @@ class CreateAgentSession:
                         if not text:
                             continue
                         if not has_text:
-                            print("[助手] ", end="", flush=True)
+                            self._emit(RunEvent("assistant.started"))
                             has_text = True
-                        print(text, end="", flush=True)
+                        self._emit(RunEvent("assistant.delta", text=text))
                     if has_text:
-                        print(flush=True)
+                        self._emit(RunEvent("assistant.completed"))
 
                 elif channel == "tool_calls":
-                    print(f"[工具开始] {item.tool_name}", flush=True)
-                    print(f"  参数：{_format_output(item.input)}", flush=True)
+                    self._emit(RunEvent("tool.started", tool_name=item.tool_name, data=item.input))
 
-                    # 即使工具没有增量输出，也必须消费此通道，等待工具完成。
+                    # 即使没有接收函数，也必须消费此通道，等待工具完成。
                     for delta in item.output_deltas:
-                        print(
-                            f"[工具输出] {item.tool_name}：{_format_output(delta)}",
-                            flush=True,
-                        )
+                        self._emit(RunEvent("tool.delta", tool_name=item.tool_name, data=delta))
 
                     self._display_tool_result(item.tool_name, item.output, item.error)
 
@@ -149,21 +142,17 @@ class CreateAgentSession:
                         if not text:
                             continue
                         if not has_text:
-                            print("[助手] ", end="", flush=True)
+                            self._emit(RunEvent("assistant.started"))
                             has_text = True
-                        print(text, end="", flush=True)
+                        self._emit(RunEvent("assistant.delta", text=text))
                     if has_text:
-                        print(flush=True)
+                        self._emit(RunEvent("assistant.completed"))
 
             async def display_tools() -> None:
                 async for item in tool_calls:
-                    print(f"[工具开始] {item.tool_name}", flush=True)
-                    print(f"  参数：{_format_output(item.input)}", flush=True)
+                    self._emit(RunEvent("tool.started", tool_name=item.tool_name, data=item.input))
                     async for delta in item.output_deltas:
-                        print(
-                            f"[工具输出] {item.tool_name}：{_format_output(delta)}",
-                            flush=True,
-                        )
+                        self._emit(RunEvent("tool.delta", tool_name=item.tool_name, data=delta))
                     self._display_tool_result(item.tool_name, item.output, item.error)
 
             tasks = [
@@ -188,12 +177,11 @@ class CreateAgentSession:
     ) -> None:
         """同步和异步路径使用相同的工具成功/失败展示规则。"""
         if error is not None:
-            print(f"[工具失败] {tool_name}：{error}", flush=True)
+            self._emit(RunEvent("tool.failed", tool_name=tool_name, text=error))
         elif isinstance(output, ToolMessage) and output.status == "error":
-            print(f"[工具失败] {tool_name}：{_format_output(output)}", flush=True)
+            self._emit(RunEvent("tool.failed", tool_name=tool_name, text=_format_output(output)))
         else:
-            print(f"[工具结果] {tool_name}\n{_format_output(output)}", flush=True)
-            print(f"[工具完成] {tool_name}", flush=True)
+            self._emit(RunEvent("tool.completed", tool_name=tool_name, data=output))
 
     def _commit_result(self, result: dict[str, Any] | None) -> str:
         """只在拿到无待执行工具的最终 AIMessage 后替换历史，返回最后回答。"""
@@ -221,7 +209,7 @@ class CreateAgentSession:
             result = await self._adisplay_agent_run(input_messages)
             return self._commit_result(result)
         except Exception as exc:
-            print(f"\n[执行失败] {exc}", flush=True)
+            self._emit(RunEvent("run.failed", text=str(exc)))
             raise
 
     def run(self, message: str) -> str:
@@ -237,7 +225,7 @@ class CreateAgentSession:
             result = self._display_agent_run(input_messages)
             return self._commit_result(result)
         except Exception as exc:
-            print(f"\n[执行失败] {exc}", flush=True)
+            self._emit(RunEvent("run.failed", text=str(exc)))
             raise
 
     def display_history(self) -> None:
@@ -263,8 +251,10 @@ class CreateAgentSession:
                 label = "用户" if isinstance(message, HumanMessage) else message.type
                 print(f"[{label}] {_format_output(message)}", flush=True)
 
-    async def switch_session(self, thread_id: str) -> None:
-        """加载目标会话的最新根图检查点，校验后替换历史和配置并打印历史。
+    async def switch_session(self, thread_id: str, *, display: bool = True) -> None:
+        """加载目标会话的最新根图检查点，校验后替换历史和配置。
+
+        display 默认 True 保留 CLI 展示；HTTP 传 False，不输出历史正文。
 
         不执行模型或工具，不重新扫描 Skills，不读写会话索引。
         目标缺失、执行未完成、查询失败或被取消时保留当前会话；异常向外传播。
@@ -292,7 +282,8 @@ class CreateAgentSession:
 
         # 查询和校验都成功后才更新；保留原始消息及其工具调用、附加数据和 ID。
         self.messages, self.config = messages, config
-        self.display_history()
+        if display:
+            self.display_history()
 
     def get_config(self) -> RunnableConfig:
         """返回当前运行配置；CLI 应在组装时注入 ID，不依赖反向读取来建索引。"""

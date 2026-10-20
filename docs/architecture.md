@@ -2,7 +2,7 @@
 
 ## 1. 总览
 
-项目提供单进程、异步执行的交互式 Coding Agent，同时保留同步 Agent 与 Runtime 接口。LangChain/LangGraph 负责模型与工具之间的执行循环；OMT 负责模型连接、依赖组装、会话历史和终端显示。
+项目提供单进程、异步执行的交互式 Coding Agent，以及固定工作目录、单用户的非流式 FastAPI 入口，同时保留同步 Agent 与 Runtime 接口。LangChain/LangGraph 负责模型与工具之间的执行循环；OMT 负责模型连接、依赖组装、会话历史和终端显示。
 
 ```text
 CLI: omt
@@ -31,12 +31,16 @@ CLI: omt
 | 模块 | 职责 | 不承担的工作 |
 | --- | --- | --- |
 | [coding_agent/session.py](../src/omt/coding_agent/session.py) | CLI 组装、创建会话 ID 与运行配置、调用 Store 登记索引、/resume 列表与选择、输入校验与重试 | 保存完整消息历史、手动执行模型请求的工具 |
+| [api/](../src/omt/api/) | 应用 lifespan、访问令牌校验、HTTP 请求/响应投影及稳定错误 | CLI 命令解析、任意目录切换、工具执行循环 |
+| [coding_agent/bootstrap.py](../src/omt/coding_agent/bootstrap.py) | CLI/HTTP 共用的模型解析、内置工具与可选 MCP 组装 | 输入循环、会话索引、HTTP 传输 |
+| [coding_agent/session_manager.py](../src/omt/coding_agent/session_manager.py) | 固定目录会话索引、按 ID 加载最新检查点、会话互斥、全局运行容量及关闭清理 | 多进程锁、持久化任务台账、工具副作用回滚 |
+| [coding_agent/events.py](../src/omt/coding_agent/events.py) | 结构化过程事件与默认终端渲染 | SSE 协议、历史持久化、全局事件全序 |
 | [coding_agent/prompts/](../src/omt/coding_agent/prompts/) | 保存并加载随包分发的基础系统提示词 | 用户配置覆盖、Skill 正文加载、模板变量或热重载 |
 | [coding_agent/settings.py](../src/omt/coding_agent/settings.py) | 配置文件读取、字段校验、设置缓存 | 创建模型、OAuth 登录/刷新 |
 | [ai/model.py](../src/omt/ai/model.py) | 通过注册表初始化模型，暴露 `model.model` | 维护对话或渲染终端 |
 | [ai/models_manager.py](../src/omt/ai/models_manager.py) 与 [models/deepseek.py](../src/omt/ai/models/deepseek.py) | 提供商路由、连接参数校验、调用 SDK 初始化 | 自动发现提供商或转换任意认证协议 |
 | [agent/agent.py](../src/omt/agent/agent.py) | 封装 `create_agent`、同步/异步调用和 v3 流，透传底层能力 | 管理 CLI 或自行拼接会话历史 |
-| [coding_agent/runtime.py](../src/omt/coding_agent/runtime.py) | 初始化提示词与 Skills 目录、一轮执行、过程展示、提交历史、按 ID 从检查点切换已完成会话 | 管理数据库文件/索引、模型配置解析、外部提示词文件读取 |
+| [coding_agent/runtime.py](../src/omt/coding_agent/runtime.py) | 初始化提示词与 Skills 目录、一轮执行、产生过程事件、提交历史、按 ID 从检查点切换已完成会话 | 管理数据库文件/索引、模型配置解析、外部提示词文件读取 |
 | [coding_agent/store.py](../src/omt/coding_agent/store.py) | SessionStore 读写预建的 sessions 表，CLI 首次执行前登记会话元数据 | 自动建库建表、保存图状态、会话恢复或 CLI 命令 |
 | [coding_agent/tools_manager.py](../src/omt/coding_agent/tools_manager.py) | 显式加载内置工具，每次返回新列表 | 当前不执行文件内注释掉的 AST 动态扫描 |
 | [coding_agent/skills.py](../src/omt/coding_agent/skills.py) | 从显式目录发现 Skill 元数据、返回诊断、生成 Runtime 使用的目录提示词 | 不自动加载正文到会话、不执行脚本 |
@@ -83,6 +87,24 @@ CLI 将文本传给 `CreateAgentSession(system_prompt=...)`，由 Runtime 与 Sk
 
 验证与分发检查见 [提示词测试说明](tests/prompts.md)。
 
+### HTTP 入口与资源生命周期
+
+`omt-api` 指向 `omt.api.app:main`，默认仅监听 127.0.0.1:8000，单 worker。create_app() 创建应用时不初始化模型，lifespan 确认工作目录等于进程 cwd、数据库与 sessions 表已存在后，加载提示词、模型和显式配置的 MCP，保持一个 AsyncSqliteSaver，再注入 SessionManager。退出时先关闭 Manager、取消并等待其活跃读取/运行，再关闭 Saver。默认 HTTP MCP 为空，不继承 CLI 本机硬编码服务器。共享组装位于 bootstrap.py；CLI 的 _get_model 是 build_model 兼容别名，_get_agent 保留 CLI 的 MCP 配置后调用共用 build_agent。
+
+```text
+HTTP + Bearer 认证 → 请求校验 / 响应投影
+  → SessionManager（固定目录、按 session_id 操作、同会话互斥、全局容量）
+    → SessionStore（元数据）+ 最新 Checkpointer 状态
+    → 独立 Runtime（event_handler=None，不打印执行正文）
+      → Agent / Tools
+```
+
+HTTP 创建会话立即登记索引，允许空会话；不是 CLI 首条输入前登记。session_id 直接映射 thread_id，每次读取或运行重新从最新检查点加载，不缓存全局当前会话；无检查点允许开始首轮，已有但未完成的状态返回冲突，不直接重试工具。成功后刷新 updated_at；若仅更新时间写入失败，仍返回 completed 和警告。失败/取消在当前 Manager 内阻止再次执行该会话，重启后根据最新磁盘检查点判断；没有持久化失败台账或原子事务。run_id 是本次请求标识，不是可查询后台任务。
+
+业务路由均需独立的 HTTP Bearer 令牌，未配置或太短时启动失败；health 为公开存活检查，不请求模型。历史仅投影用户/助手/工具文本和工具关联，不返回系统提示词、artifact、模型元数据或检查点；这不是正文脱敏。输入拒绝额外字段，客户端不能更换工作目录、模型 URL 或 MCP 命令。请求期间不调用 chdir。当前进程内互斥不保护外部 CLI 或其他 worker，不能同时写同一会话。
+
+非流式执行等待完成后返回 JSON；同会话忙返回 409，全局容量满返回 429。断线不保证立即取消，尚无 SSE、后台任务查询、取消、事件重放、多用户或沙箱。启动配置、完整路由、错误及限制见 [HTTP 使用说明](api.md)，离线验证见 [HTTP 测试说明](tests/api.md)。
+
 ## 3. 模型连接与配置
 
 ### 文件位置与缓存
@@ -127,7 +149,7 @@ CLI 将文本传给 `CreateAgentSession(system_prompt=...)`，由 Runtime 与 Sk
 | `CreateAgentSession` | 负责多轮历史和展示的会话对象；当前保留此公开名称 |
 | 一轮 `session.run(text)` / `await session.arun(text)` | 完成一个用户请求，内部可以调用模型和工具多次；同一实例仅支持顺序执行 |
 
-`CreateAgentSession(agent, config=None, *, system_prompt="", skill_roots=None)` 接收现成 Agent，原有两个位置参数兼容。CLI 主动创建 ID 和 config，再将同一个 thread_id 交给 Runtime 与 Store；Runtime 不管理数据库文件或 sessions 索引，切换时通过现有图的 Checkpointer 读取状态。初始化时复制配置外层和 `configurable` 字典；没有 `thread_id` 键才生成 UUID v4 字符串，作为非 CLI 直接调用方的兼容默认行为。已有值保持不变，后续每轮复用同一 ID，get_config() 返回当前 RunnableConfig。其他嵌套配置不是深拷贝。
+`CreateAgentSession(agent, config=None, *, system_prompt="", skill_roots=None, event_handler=print_event)` 接收现成 Agent，原有两个位置参数兼容。CLI 主动创建 ID 和 config，再将同一个 thread_id 交给 Runtime 与 Store；Runtime 不管理数据库文件或 sessions 索引，切换时通过现有图的 Checkpointer 读取状态。初始化时复制配置外层和 `configurable` 字典；没有 `thread_id` 键才生成 UUID v4 字符串，作为非 CLI 直接调用方的兼容默认行为。已有值保持不变，后续每轮复用同一 ID，get_config() 返回当前 RunnableConfig。其他嵌套配置不是深拷贝。
 
 初始化消息只准备一次：
 
@@ -174,7 +196,7 @@ CLI 当前在 asession() 中打开 AsyncSqliteSaver，将检查点传给 Agent�
 
 await conversation.switch_session(thread_id) 使用当前 Agent 的现有 Checkpointer 查询目标根图的最新状态，成功后在同一实例中替换 messages 和 config，不创建另一个 Runtime。保留当前运行选项，复制配置外层和 configurable 后替换 thread_id，并移除 checkpoint_id、checkpoint_ns、checkpoint_map；不把返回快照的具体 checkpoint_id 固定到后续调用，避免追加输入时从旧检查点分支。
 
-切换只读检查点、不执行模型或工具、不重新扫描 Skills 或插入系统提示词，不操作 sessions 表。目标历史中的原始消息、ID、工具结果 artifact 和模型元数据均保留。更新 messages、config 后自动调用同步 display_history()，按历史顺序打印用户消息、助手文本、工具调用参数和结果；错误工具结果标为失败，工具名缺失时显示 tool_call_id。该方法也可独立调用，空历史或仅有系统消息时提示暂无历史。展示不输出系统提示词、artifact 或模型元数据，不重放工具开始/完成通知；消息正文与工具参数仍按原内容展示，不提供通用脱敏。目标不存在或没有消息、ID 为空、图仍有待执行节点、最后消息不是无待执行工具的 AIMessage 时拒绝切换。查询失败、取消或校验失败时，当前 messages、config 保持不变。此方法要求与 run、arun 及其他切换顺序调用，不提供并发切换或中断执行恢复。
+切换只读检查点、不执行模型或工具、不重新扫描 Skills 或插入系统提示词，不操作 sessions 表。目标历史中的原始消息、ID、工具结果 artifact 和模型元数据均保留。更新 messages、config 后默认调用同步 display_history()；HTTP 使用新增的仅关键字参数 display=False 关闭自动展示，不改变校验和加载行为。按历史顺序打印用户消息、助手文本、工具调用参数和结果；错误工具结果标为失败，工具名缺失时显示 tool_call_id。该方法也可独立调用，空历史或仅有系统消息时提示暂无历史。展示不输出系统提示词、artifact 或模型元数据，不重放工具开始/完成通知；消息正文与工具参数仍按原内容展示，不提供通用脱敏。目标不存在或没有消息、ID 为空、图仍有待执行节点、最后消息不是无待执行工具的 AIMessage 时拒绝切换。查询失败、取消或校验失败时，当前 messages、config 保持不变。此方法要求与 run、arun 及其他切换顺序调用，不提供并发切换或中断执行恢复。
 
 CLI 的 /resume N 在选择当前目录的合法索引后调用该方法，成功后由 CLI 调用 Store 更新时间并同步入口局部 ID 和登记状态，不再次插入已存在的索引；直接调用 Runtime 不读写会话索引。它不替换模型、工具或其他初始化依赖。交互与失败路径见 [CLI /resume 测试说明](tests/resume.md)。
 
@@ -204,6 +226,8 @@ SessionStore(db_path) 独立管理预先创建的 sessions 表，用 thread_id �
 | `stream.values` | Agent 状态快照，通常不是消息增量 |
 | `stream.output` / `await stream.output()` | 同步属性 / 异步方法；最终状态字典，`["messages"]` 含此次输入历史与执行产生的完整消息 |
 | `context=` | 运行上下文；不是自动发送给模型的对话历史 |
+
+Runtime 通过 event_handler 接收函数输出 RunEvent（助手文本开始/增量/结束、工具开始/增量/完成/失败、运行失败），默认交给 events.print_event 终端渲染，保留 CLI 行为；传入 None 关闭过程正文输出，但仍消费全部通道并校验终态。接收函数为同步快速回调，不支持等待网络或异步背压；这些事件不是持久化消息，也不是已经实现的 SSE 协议。switch_session(display=False) 可独立关闭恢复后的历史展示，默认仍展示以兼容 CLI。Skills 诊断仍写 stderr。
 
 runtime 同步路径用 `interleave("messages", "tool_calls")` 同时订阅模型和工具通道。当前依赖的异步流没有 `interleave()`，异步路径先订阅两个通道，再通过两个消费任务并行读取；完成后检查原始异常，退出前取消并等待未完成的消费任务，再关闭流。两种路径都显示助手文本、工具参数、工具增量、最终结果和错误，工具终态展示规则共用。不要先耗尽一个通道，再期望未订阅的另一个通道回放全过程。
 

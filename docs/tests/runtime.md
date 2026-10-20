@@ -79,6 +79,17 @@
 | 成功切换后展示 | 真实检查点包含多行用户输入、文本块、空文本工具请求、成功/失败工具结果及内部字段 | 更新后按顺序各展示一次，工具名称缺失时回退到调用 ID；不混入旧实例消息或内部字段；不执行模型、不改写内存及检查点消息 | test_switch_session_displays_updated_history_in_order_without_internal_metadata |
 | 单独展示空历史 | messages 为空或仅有 SystemMessage | 标题打印一次，提示暂无历史，不泄露系统提示词，不改变 messages | test_display_history_handles_empty_or_only_system_messages |
 
+## 结构化事件与静默执行
+
+Runtime 新增仅关键字参数 event_handler，默认使用 events.print_event 保留既有终端输出；None 表示静默消费，函数接收 RunEvent。回调是同步快速接收，不是 SSE 或异步背压 Interface。switch_session 新增 display=False 关闭成功恢复后的历史打印，默认 True 保持原有 CLI 兼容。
+
+| 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
+| --- | --- | --- | --- |
+| 无终端输出的执行 | 分别通过 run/arun，安装列表收集函数或传 None；真实假模型+进度工具 | 返回最终回答、完整工具消息链不变，无终端正文；收集到正确助手文本及工具开始/增量/完成，None 时仍执行完整回合 | test_execution_can_emit_events_without_terminal_output |
+| 静默恢复 | 内存 Checkpointer 中已完成的会话，switch_session(display=False) | 完整消息成功加载，不打印历史，不执行新模型请求 | test_switch_session_can_restore_without_displaying_history |
+
+事件类型与渲染源码见 [events.py](../../src/omt/coding_agent/events.py)。本组不保证所有并发事件的全局顺序，不验证网络传输。默认输出及异常/取消清理继续由原有用例回归，HTTP 使用 None 的完整链路另见 [HTTP 测试](api.md)。
+
 ## 隔离方式
 
 真实 Agent 图搭配本地假模型和临时定义的工具；工具进度通过 ToolRuntime.emit_output_delta 产生。模型输入被记录以核对第二轮确实获得历史，而非仅检查本地列表长度。只有缺失终态等难以从正常图得到的场景使用流/方法替身。

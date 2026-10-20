@@ -9,6 +9,7 @@
 | [模型初始化](ai-models.md) | [test_ai.py](../../tests/ai/test_ai.py)、[test_models_manager.py](../../tests/ai/test_models_manager.py)、[test_deepseek.py](../../tests/ai/test_deepseek.py) |
 | [Agent 与同步/异步 v3 流](agent.md) | [test_agent.py](../../tests/test_agent.py)、[test_agent_stream.py](../../tests/test_agent_stream.py)、[test_agent_async.py](../../tests/test_agent_async.py) |
 | [Runtime、历史与会话 ID](runtime.md) | [test_runtime.py](../../tests/test_runtime.py)、[test_runtime_switch.py](../../tests/test_runtime_switch.py) |
+| [HTTP 与会话管理](api.md) | [test_api.py](../../tests/api/test_api.py) |
 | [SQLite 会话索引](store.md) | [test_store.py](../../tests/coding_agent/test_store.py) |
 | [CLI /resume 会话选择与恢复](resume.md) | [test_resume.py](../../tests/coding_agent/test_resume.py) |
 | [CLI Session 与配置](session-and-config.md) | [test_session.py](../../tests/coding_agent/test_session.py)、[test_settings.py](../../tests/coding_agent/test_settings.py)、[test_configuration_files.py](../../tests/coding_agent/test_configuration_files.py) |

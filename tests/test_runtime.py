@@ -27,6 +27,7 @@ from pydantic import Field
 from omt.agent.agent import Agent
 from omt.coding_agent import settings as settings_module
 from omt.coding_agent.runtime import CreateAgentSession
+from omt.coding_agent.events import RunEvent
 from omt.coding_agent.tools.read import read
 
 
@@ -892,3 +893,45 @@ def test_sync_and_async_turns_share_history() -> None:
     assert asyncio.run(session.arun("二")) == "异步二"
     assert session.run("三") == "同步三"
     assert [msg.text for msg in session.messages] == ["一", "同步一", "二", "异步二", "三", "同步三"]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("collect_events", [False, True])
+def test_execution_can_emit_events_without_terminal_output(
+    asynchronous: bool, collect_events: bool, capsys: pytest.CaptureFixture[str],
+) -> None:
+    original, model = make_tool_session()
+    events: list[RunEvent] = []
+    session = CreateAgentSession(
+        original.agent, skill_roots=[], event_handler=events.append if collect_events else None,
+    )
+
+    answer = asyncio.run(session.arun("读取说明")) if asynchronous else session.run("读取说明")
+
+    assert answer == "第一轮总结完成。"
+    assert [message.type for message in session.messages] == ["human", "ai", "tool", "ai"]
+    assert model.seen_messages
+    assert capsys.readouterr().out == ""
+    if collect_events:
+        assert "".join(event.text for event in events if event.kind == "assistant.delta") == "我先读取说明。第一轮总结完成。"
+        assert [event.kind for event in events if event.kind.startswith("tool.")] == [
+            "tool.started", "tool.delta", "tool.completed",
+        ]
+        assert next(event for event in events if event.kind == "tool.started").data == {"name": "README.md"}
+    else:
+        assert events == []
+
+
+def test_switch_session_can_restore_without_displaying_history(capsys: pytest.CaptureFixture[str]) -> None:
+    async def execute() -> None:
+        agent = Agent(FakeListChatModel(responses=["已完成"]), checkpointer=InMemorySaver())
+        source = CreateAgentSession(
+            agent, config={"configurable": {"thread_id": "quiet-source"}},
+            skill_roots=[], event_handler=None,
+        )
+        assert await source.arun("原问题") == "已完成"
+        target = CreateAgentSession(agent, skill_roots=[], event_handler=None)
+        await target.switch_session("quiet-source", display=False)
+        assert target.messages == source.messages
+    asyncio.run(execute())
+    assert capsys.readouterr().out == ""

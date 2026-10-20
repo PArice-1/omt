@@ -4,7 +4,8 @@
 
 源码：
 
-- [session.py](../../src/omt/coding_agent/session.py)：选择模型、组装 Agent、校验输入和运行循环。
+- [session.py](../../src/omt/coding_agent/session.py)：CLI MCP 配置、组装入口、校验输入和运行循环。
+- [bootstrap.py](../../src/omt/coding_agent/bootstrap.py)：CLI/HTTP 共用模型解析和 Agent/工具组装；CLI 保留 _get_model 别名及 _get_agent 包装，原有测试继续通过它们验证配置和底层模型选择。HTTP 默认组装另见 [HTTP 测试](api.md)。
 - [settings.py](../../src/omt/coding_agent/settings.py)：读取与校验三类配置。
 - [prompts/__init__.py](../../src/omt/coding_agent/prompts/__init__.py)：加载包内基础系统提示词；资源异常场景见 [提示词测试说明](prompts.md)。
 

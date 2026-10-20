@@ -20,12 +20,11 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from omt.agent.agent import Agent
 from omt.ai.model import Model
-from omt.ai.models_manager import models as model_initializers
 
 from .prompts import load_system_prompt
 from .runtime import CreateAgentSession
-from .settings import Settings, load_auth, load_model_store, load_settings, root
-from .tools_manager import load_tools
+from .settings import load_settings, root
+from .bootstrap import build_model as _get_model, build_agent
 from .mcp import get_tools
 from .store import SessionRecord, SessionStore
 
@@ -51,48 +50,6 @@ db_path = (root / "agent" / "state" / "omt.sqlite").expanduser().resolve()
 ## =============== end ===================
 
 
-def _get_model(settings: Settings) -> Model:
-    """按提供商和模型 ID 精确解析认证与连接信息，不回退到其他模型或环境密钥。"""
-    provider = settings.defaultProvider
-    model_id = settings.defaultModel
-    if provider not in model_initializers:
-        raise ValueError(f"提供商 {provider!r} 未注册模型初始化函数")
-
-    credential = load_auth().get(provider)
-    if credential is None:
-        raise ValueError(f"auth.json 中缺少提供商 {provider!r} 的认证配置")
-    if credential.type != "api_key":
-        raise ValueError(
-            f"提供商 {provider!r} 的认证类型 {credential.type!r} 暂不支持；"
-            "目前仅支持 api_key，其他认证需要提供商专用适配，不能直接当作 API Key"
-        )
-    api_key = credential.key
-    if api_key is None or not api_key.get_secret_value().strip():
-        raise ValueError(f"auth.json 中提供商 {provider!r} 的 API Key 不能为空")
-
-    provider_models = load_model_store().get(provider)
-    if provider_models is None:
-        raise ValueError(f"model-store.json 中缺少提供商 {provider!r}")
-    definition = next(
-        (model for model in provider_models.models if model.id == model_id), None
-    )
-    if definition is None:
-        raise ValueError(
-            f"model-store.json 中未找到提供商 {provider!r} 的模型 {model_id!r}；"
-            "settings.json 的 defaultModel 必须与 models[].id 完全一致"
-        )
-    if definition.provider is not None and definition.provider != provider:
-        raise ValueError(f"model-store.json 中模型 {model_id!r} 的提供商与配置不一致")
-
-    return Model(
-        provider,
-        model=definition.id,
-        base_url=definition.baseUrl,
-        api_key=api_key,
-    )
-
-
-
 async def _get_agent(
     model: Model,
     *,
@@ -100,8 +57,7 @@ async def _get_agent(
 ) -> Agent:
     """用底层聊天模型和内置工具创建可执行的 Agent 实例。"""
     mcp_tools = await get_tools(servers=servers)
-    tools = [*load_tools(), *mcp_tools]
-    return Agent(model=model.model, tools=tools, checkpointer=checkpointer)
+    return await build_agent(model, checkpointer=checkpointer, extra_tools=mcp_tools)
 
 
 class _UserInputValidator(Validator):

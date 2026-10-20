@@ -6,12 +6,12 @@
 
 | 源码 | 测试 |
 | --- | --- |
-| [read.py](../../src/omt/coding_agent/tools/read.py) | [test_read.py](../../tests/coding_agent/tools/test_read.py) |
-| [write.py](../../src/omt/coding_agent/tools/write.py) | [test_write.py](../../tests/coding_agent/tools/test_write.py) |
-| [edit.py](../../src/omt/coding_agent/tools/edit.py) | [test_edit.py](../../tests/coding_agent/tools/test_edit.py) |
-| [bash.py](../../src/omt/coding_agent/tools/bash.py) | [test_bash.py](../../tests/coding_agent/tools/test_bash.py) |
-| [tools_manager.py](../../src/omt/coding_agent/tools_manager.py) | [test_tools_manager.py](../../tests/coding_agent/test_tools_manager.py) |
-| [find_files.py](../../src/omt/coding_agent/utils/find_files.py) | [test_find_files.py](../../tests/coding_agent/utils/test_find_files.py) |
+| [read.py](../../src/omt/core/tools/read.py) | [test_read.py](../../tests/core/tools/test_read.py) |
+| [write.py](../../src/omt/core/tools/write.py) | [test_write.py](../../tests/core/tools/test_write.py) |
+| [edit.py](../../src/omt/core/tools/edit.py) | [test_edit.py](../../tests/core/tools/test_edit.py) |
+| [bash.py](../../src/omt/core/tools/bash.py) | [test_bash.py](../../tests/core/tools/test_bash.py) |
+| [tools_manager.py](../../src/omt/core/tools_manager.py) | [test_tools_manager.py](../../tests/core/test_tools_manager.py) |
+| [find_files.py](../../src/omt/core/utils/find_files.py) | [test_find_files.py](../../tests/core/utils/test_find_files.py) |
 
 ## 1. 文件工具场景
 
@@ -65,10 +65,10 @@ find_files 是辅助函数；这些测试不表示注释中的 AST 动态工具�
 
 ## 隔离方式与执行
 
-[共享 fixture](../../tests/coding_agent/conftest.py) 隔离配置根目录，FIFO 在不支持 mkfifo 的平台跳过。Bash 使用本地命令，集成测试注入假模型，不请求真实提供商。
+[共享 fixture](../../tests/core/conftest.py) 隔离配置根目录，FIFO 在不支持 mkfifo 的平台跳过。Bash 使用本地命令，集成测试注入假模型，不请求真实提供商。
 
 ```bash
-uv run pytest -q tests/coding_agent/tools tests/coding_agent/test_tools_manager.py tests/coding_agent/utils/test_find_files.py --tb=no
+uv run pytest -q tests/core/tools tests/core/test_tools_manager.py tests/core/utils/test_find_files.py --tb=no
 ```
 
 新增工具时同步更新：工具调用测试、注册集合断言、[共用组装测试](session-and-config.md) 和本说明的场景表。

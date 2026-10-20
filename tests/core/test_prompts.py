@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from omt.coding_agent import prompts as prompts_module
-from omt.coding_agent.prompts import load_system_prompt
+from omt.core import prompts as prompts_module
+from omt.core.prompts import load_system_prompt
 
 
 @pytest.fixture
@@ -14,7 +14,7 @@ def resource_directory(
 ) -> Path:
     """以临时目录代替包资源入口，覆盖缺失、编码和内容错误。"""
     def files(anchor: str) -> Path:
-        assert anchor == "omt.coding_agent.prompts"
+        assert anchor == "omt.core.prompts"
         return tmp_path
 
     monkeypatch.setattr(prompts_module, "files", files)

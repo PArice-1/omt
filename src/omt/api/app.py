@@ -12,8 +12,8 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.exceptions import HTTPException
 
-from omt.coding_agent import bootstrap
-from omt.coding_agent.session_manager import SessionError, SessionManager
+from omt.core import bootstrap
+from omt.core.session_manager import SessionError, SessionManager
 
 from .routes import session_routes
 from .settings import ApiSettings

@@ -18,7 +18,7 @@ omt / python -m omt.cli               omt-api
                           → Agent → 模型 / 工具
 ```
 
-核心不导入 CLI 或 API，不维护全局“当前会话”，不直接打印终端。CLI 当前选择只是入口局部状态；所有会话登记、查询、恢复和执行均通过 Manager，不再直接编排 Store 或 Conversation。
+core 是与入口无关的共用核心，不限定于编码场景。核心不导入 CLI 或 API，不维护全局“当前会话”，不直接打印终端。CLI 当前选择只是入口局部状态；所有会话登记、查询、恢复和执行均通过 Manager，不再直接编排 Store 或 Conversation。
 
 ### 代码地图
 
@@ -28,19 +28,19 @@ omt / python -m omt.cli               omt-api
 | [cli/commands.py](../src/omt/cli/commands.py) | /resume、退出、编号映射和当前选择 | 模型执行、直接读写 Store |
 | [cli/terminal.py](../src/omt/cli/terminal.py) | 同步/异步输入校验、事件和历史渲染、警告 | 保存历史、HTTP 响应 |
 | [api/](../src/omt/api/) | lifespan、Bearer 校验、请求/响应和稳定错误 | CLI 命令、会话内部编排 |
-| [coding_agent/bootstrap.py](../src/omt/coding_agent/bootstrap.py) | 读取提示词和模型配置、工具/MCP、Store/Saver/Manager 的共用生命周期 | 输入循环、HTTP 传输 |
-| [coding_agent/configuration.py](../src/omt/coding_agent/configuration.py) | 共用会话选项、类型化 MCP 连接配置；入口各自继承并指定前缀 | HTTP 令牌、读取模型认证 |
-| [coding_agent/session_manager.py](../src/omt/coding_agent/session_manager.py) | 按 ID 操作、目录归属、最新历史、互斥/容量、失败和关闭清理 | 跨进程锁、回滚、全局当前会话 |
-| [coding_agent/conversation.py](../src/omt/coding_agent/conversation.py) | 初始提示词/Skills、一轮同步/异步执行、历史加载和终态校验、过程事件 | 索引、模型配置、终端显示 |
-| [coding_agent/events.py](../src/omt/coding_agent/events.py) | RunEvent 数据与 EventHandler 类型 | 渲染、SSE、持久化 |
-| [coding_agent/store.py](../src/omt/coding_agent/store.py) | 预建 sessions 表的元数据读写 | 消息、自动建表、检查点恢复 |
-| [coding_agent/settings.py](../src/omt/coding_agent/settings.py) | 模型配置、认证与目录读取及校验 | 会话编排、OAuth |
+| [core/bootstrap.py](../src/omt/core/bootstrap.py) | 读取提示词和模型配置、工具/MCP、Store/Saver/Manager 的共用生命周期 | 输入循环、HTTP 传输 |
+| [core/configuration.py](../src/omt/core/configuration.py) | 共用会话选项、类型化 MCP 连接配置；入口各自继承并指定前缀 | HTTP 令牌、读取模型认证 |
+| [core/session_manager.py](../src/omt/core/session_manager.py) | 按 ID 操作、目录归属、最新历史、互斥/容量、失败和关闭清理 | 跨进程锁、回滚、全局当前会话 |
+| [core/conversation.py](../src/omt/core/conversation.py) | 初始提示词/Skills、一轮同步/异步执行、历史加载和终态校验、过程事件 | 索引、模型配置、终端显示 |
+| [core/events.py](../src/omt/core/events.py) | RunEvent 数据与 EventHandler 类型 | 渲染、SSE、持久化 |
+| [core/store.py](../src/omt/core/store.py) | 预建 sessions 表的元数据读写 | 消息、自动建表、检查点恢复 |
+| [core/settings.py](../src/omt/core/settings.py) | 模型配置、认证与目录读取及校验 | 会话编排、OAuth |
 | [ai/model.py](../src/omt/ai/model.py)、[models_manager.py](../src/omt/ai/models_manager.py) | 提供商注册和模型初始化 | 历史和展示 |
 | [agent/agent.py](../src/omt/agent/agent.py) | create_agent 与同步/异步调用、v3 流包装 | CLI、拼接历史、手动执行工具 |
-| [coding_agent/prompts/](../src/omt/coding_agent/prompts/)、[skills.py](../src/omt/coding_agent/skills.py) | 包内基础规则、可信目录的 Skill 元数据发现 | 沙箱、自动执行 Skill 脚本 |
-| [tools_manager.py](../src/omt/coding_agent/tools_manager.py)、[tools/](../src/omt/coding_agent/tools/) | 静态工具注册、文件和 Bash | 权限审批、事务回滚 |
+| [core/prompts/](../src/omt/core/prompts/)、[skills.py](../src/omt/core/skills.py) | 包内基础规则、可信目录的 Skill 元数据发现 | 沙箱、自动执行 Skill 脚本 |
+| [tools_manager.py](../src/omt/core/tools_manager.py)、[tools/](../src/omt/core/tools/) | 静态工具注册、文件和 Bash | 权限审批、事务回滚 |
 
-兼容性：命令 omt、HTTP 路由及 JSON 字段不变。旧 Python 路径 coding_agent.session、coding_agent.runtime 和 CreateAgentSession 已移除；同步入口改用 cli.app.main()，异步入口改用 cli.app.run_cli()，低层会话对象改用 Conversation。load_history() 不再自动展示，核心默认静默；需要显示的调用方显式安装 CLI 渲染。这是内部 Python 调用接口迁移，不提供旧模块包装层。
+兼容性：核心包由 `omt.coding_agent` 更名为 `omt.core`，不保留旧包的兼容导入；命令 omt、HTTP 路由、JSON 字段、配置环境变量及用户数据目录不变。此前 CLI 拆分已移除旧 session/runtime 模块和 CreateAgentSession；同步入口使用 cli.app.main()，异步入口使用 cli.app.run_cli()，低层会话对象使用 core.conversation.Conversation。load_history() 不自动展示，核心默认静默；需要显示的调用方显式安装 CLI 渲染。
 
 ## 2. 入口与共用组装
 

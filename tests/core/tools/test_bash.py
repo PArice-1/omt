@@ -16,10 +16,10 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import ValidationError
 
 from omt.agent.agent import Agent
-from omt.coding_agent.conversation import Conversation
+from omt.core.conversation import Conversation
 from omt.cli.terminal import print_event
-from omt.coding_agent.tools.bash import bash
-from omt.coding_agent.tools_manager import load_tools
+from omt.core.tools.bash import bash
+from omt.core.tools_manager import load_tools
 
 pytestmark = pytest.mark.skipif(
     os.name != "posix" or shutil.which("bash") is None,
@@ -158,7 +158,7 @@ def test_shell_syntax_error_is_returned_to_model(tmp_path: Path):
 
 
 def test_missing_bash_executable_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    module = import_module("omt.coding_agent.tools.bash")
+    module = import_module("omt.core.tools.bash")
     monkeypatch.setattr(module.shutil, "which", Mock(return_value=None))
 
     with pytest.raises(FileNotFoundError, match="Bash"):
@@ -169,7 +169,7 @@ def test_missing_bash_executable_is_reported(tmp_path: Path, monkeypatch: pytest
 def test_interrupted_output_capture_terminates_the_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exception_type
 ):
-    module = import_module("omt.coding_agent.tools.bash")
+    module = import_module("omt.core.tools.bash")
     error = exception_type("模拟输出读取中断")
     processes = []
 

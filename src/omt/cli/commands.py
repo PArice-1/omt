@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
-from omt.coding_agent.session_manager import SessionError, SessionManager
-from omt.coding_agent.store import SessionRecord
+from omt.core.session_manager import SessionError, SessionManager
+from omt.core.store import SessionRecord
 
 from .terminal import display_history, print_warnings
 

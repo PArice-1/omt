@@ -1,4 +1,4 @@
-"""测试对象：src/omt/coding_agent/tools_manager.py::load_tools。
+"""测试对象：src/omt/core/tools_manager.py::load_tools。
 
 覆盖内容：
 1. 返回名为 edit/read/write/bash 的 LangChain BaseTool 列表，无重复名称。
@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from langchain_core.tools import BaseTool
 
-from omt.coding_agent.tools_manager import load_tools
+from omt.core.tools_manager import load_tools
 
 
 def test_load_tools_returns_builtin_langchain_tools():

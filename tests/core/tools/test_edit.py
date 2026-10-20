@@ -1,4 +1,4 @@
-"""测试对象：src/omt/coding_agent/tools/edit.py::edit（LangChain 工具接口）。
+"""测试对象：src/omt/core/tools/edit.py::edit（LangChain 工具接口）。
 
 覆盖内容：
 1. 单处精确替换、授权的多处替换、空 new_string 删除及相对路径。
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from omt.coding_agent.tools.edit import edit
+from omt.core.tools.edit import edit
 
 
 @pytest.mark.parametrize("use_string_path", [False, True])

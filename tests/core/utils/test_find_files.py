@@ -1,4 +1,4 @@
-"""测试对象：src/omt/coding_agent/utils/find_files.py::find_files。
+"""测试对象：src/omt/core/utils/find_files.py::find_files。
 
 覆盖内容：
 1. 按 glob 模式查找普通文件，支持递归模式，返回排序后的绝对 Path 列表。
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from omt.coding_agent.utils.find_files import find_files
+from omt.core.utils.find_files import find_files
 
 
 @pytest.mark.parametrize("use_string_path", [False, True])

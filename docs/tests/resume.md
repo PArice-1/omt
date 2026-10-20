@@ -2,8 +2,8 @@
 
 ## 对象与目的
 
-- 源码：[cli/commands.py](../../src/omt/cli/commands.py)、[cli/app.py](../../src/omt/cli/app.py)，通过 [SessionManager](../../src/omt/coding_agent/session_manager.py) 查询和激活会话。
-- 测试：[test_resume.py](../../tests/cli/test_resume.py)，由旧 tests/coding_agent/test_resume.py 迁入 CLI 模块。
+- 源码：[cli/commands.py](../../src/omt/cli/commands.py)、[cli/app.py](../../src/omt/cli/app.py)，通过 [SessionManager](../../src/omt/core/session_manager.py) 查询和激活会话。
+- 测试：[test_resume.py](../../tests/cli/test_resume.py)，随 CLI 拆分迁入该目录。
 - 防止命令被当作用户消息、编号与 ID 错配、跨目录恢复、失败切换污染当前选择，以及重复登记旧会话。
 
 ## 交互契约与变更
@@ -46,8 +46,8 @@ handle_command 返回 run / handled / exit，并只在 Manager.open_session 成�
 
 ```bash
 uv run pytest -q tests/cli/test_resume.py --tb=no
-uv run pytest -q tests/cli tests/coding_agent/test_conversation_history.py tests/api --tb=no
-basedpyright --pythonpath .venv/bin/python src/omt/cli src/omt/coding_agent/session_manager.py tests/cli/test_resume.py
+uv run pytest -q tests/cli tests/core/test_conversation_history.py tests/api --tb=no
+basedpyright --pythonpath .venv/bin/python src/omt/cli src/omt/core/session_manager.py tests/cli/test_resume.py
 ```
 
 ## 覆盖限制

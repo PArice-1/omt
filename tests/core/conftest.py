@@ -1,4 +1,4 @@
-"""Coding Agent 测试共享 fixture（本文件不包含测试用例）。
+"""Core 测试共享 fixture（本文件不包含测试用例）。
 
 non_regular_file：在 tmp_path 中创建 FIFO，用于验证 read/edit/write 拒绝非普通文件。
 不支持 os.mkfifo 的平台自动跳过依赖此 fixture 的用例；不打开或读写 FIFO。
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from omt.coding_agent import settings as settings_module
+from omt.core import settings as settings_module
 
 
 @pytest.fixture(autouse=True)

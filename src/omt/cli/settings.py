@@ -6,7 +6,7 @@ from typing import ClassVar
 from pydantic import Field
 from pydantic_settings import SettingsConfigDict
 
-from omt.coding_agent.configuration import McpServerSettings, SessionSettings, StdioServerSettings
+from omt.core.configuration import McpServerSettings, SessionSettings, StdioServerSettings
 
 
 def _default_mcp_servers() -> dict[str, McpServerSettings]:

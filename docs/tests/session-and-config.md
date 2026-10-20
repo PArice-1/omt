@@ -2,8 +2,8 @@
 
 ## 对象与目的
 
-- 源码：[settings.py](../../src/omt/coding_agent/settings.py)、[bootstrap.py](../../src/omt/coding_agent/bootstrap.py)。
-- 测试：[test_settings.py](../../tests/coding_agent/test_settings.py)、[test_configuration_files.py](../../tests/coding_agent/test_configuration_files.py)、[test_bootstrap.py](../../tests/coding_agent/test_bootstrap.py)。
+- 源码：[settings.py](../../src/omt/core/settings.py)、[bootstrap.py](../../src/omt/core/bootstrap.py)。
+- 测试：[test_settings.py](../../tests/core/test_settings.py)、[test_configuration_files.py](../../tests/core/test_configuration_files.py)、[test_bootstrap.py](../../tests/core/test_bootstrap.py)。
 - 防止选错模型或 URL、将 OAuth 当 Key、配置报错泄露凭据，以及测试误读用户配置。
 
 原 test_session.py 的模型解析和 Agent 组装用例迁入 test_bootstrap.py，直接测试共用 build_model/build_agent，不再经已删除的 CLI 私有别名。交互、输入、信号与完整组装链路迁入 [CLI 测试](cli.md)，恢复迁入 [/resume 测试](resume.md)。这不是删除旧行为覆盖：低层模型断言保留；旧失败后直接重试契约按 Manager 的保守策略替换。
@@ -35,7 +35,7 @@
 
 ## 隔离方式
 
-[coding_agent/conftest.py](../../tests/coding_agent/conftest.py) 同时隔离 settings.root 与 cwd，前后清空 load_settings 缓存。所有 JSON 均写在 tmp_path，使用保留域名与假 Key，不输出真实认证文件。
+[core/conftest.py](../../tests/core/conftest.py) 同时隔离 settings.root 与 cwd，前后清空 load_settings 缓存。所有 JSON 均写在 tmp_path，使用保留域名与假 Key，不输出真实认证文件。
 
 模型组装只替换 SDK 初始化端点，保留从 build_model → Model → 提供商函数的调用链；返回 FakeListChatModel，不发网络请求。Agent 用真实内置工具定义，默认不传 MCP 配置，不启动 MCP。配置解析错误仅包含测试假标记，用于检验完整格式化异常也不泄密。
 
@@ -44,9 +44,9 @@
 ## 执行
 
 ```bash
-uv run pytest -q tests/coding_agent/test_settings.py tests/coding_agent/test_configuration_files.py tests/coding_agent/test_bootstrap.py --tb=no
+uv run pytest -q tests/core/test_settings.py tests/core/test_configuration_files.py tests/core/test_bootstrap.py --tb=no
 uv run pytest -q tests/cli tests/api --tb=no
-basedpyright --pythonpath .venv/bin/python src/omt/coding_agent/bootstrap.py src/omt/coding_agent/configuration.py tests/coding_agent/test_bootstrap.py
+basedpyright --pythonpath .venv/bin/python src/omt/core/bootstrap.py src/omt/core/configuration.py tests/core/test_bootstrap.py
 ```
 
 ## 覆盖限制

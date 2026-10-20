@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from omt.coding_agent.session_manager import SessionManager
+from omt.core.session_manager import SessionManager
 
 from .schemas import (
     CreateSessionRequest, MessageResponse, RunRequest, RunResponse, SessionResponse,

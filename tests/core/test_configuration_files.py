@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from omt.coding_agent.settings import Settings, load_auth, load_model_store
+from omt.core.settings import Settings, load_auth, load_model_store
 
 
 @pytest.fixture

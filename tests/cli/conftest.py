@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from omt.coding_agent import settings as agent_settings
+from omt.core import settings as agent_settings
 
 
 @pytest.fixture(autouse=True)

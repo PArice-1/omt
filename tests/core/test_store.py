@@ -10,7 +10,7 @@ from typing import Literal
 
 import pytest
 
-from omt.coding_agent.store import SessionRecord, SessionStore
+from omt.core.store import SessionRecord, SessionStore
 
 
 SCHEMA = """

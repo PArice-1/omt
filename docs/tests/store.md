@@ -2,8 +2,8 @@
 
 ## 对象与目的
 
-- 源码：[store.py](../../src/omt/coding_agent/store.py)。
-- 测试：[test_store.py](../../tests/coding_agent/test_store.py)。
+- 源码：[store.py](../../src/omt/core/store.py)。
+- 测试：[test_store.py](../../tests/core/test_store.py)。
 - 保证 SessionStore 只读写调用方指定的已有数据库和 sessions 表，避免路径错误时创建空库、重复 ID 覆盖旧会话，以及按目录列出时混入其他项目。
 - 本模块保存会话元数据，不保存消息、执行图状态或管理 Checkpointer 的内部表。CLI /resume 通过 Manager 协调本模块查询和 Conversation 历史加载，交互测试见 [resume.md](resume.md)。
 
@@ -49,13 +49,13 @@ thread_id 由调用方提供，作为不透明标识保留原值，不强制 UUI
 
 所有 SQLite 文件、工作目录均在 tmp_path 中；测试用同步 sqlite3 显式建表，应用接口用真实 aiosqlite 读写，不 mock 数据库，以验证提交、约束和 SQL 行为。每次连接均被关闭，不保留后台工作线程。
 
-依赖 [Coding Agent 共享 fixture](../../tests/coding_agent/conftest.py) 隔离配置根目录与 cwd，路径测试额外将 HOME 指向临时目录。不读取真实凭据，不请求模型或 MCP 服务，不访问用户现有数据库。排序通过固定时间数据验证；更新时间以调用前后的 UTC 秒时间为范围，并重新打开数据库检查提交及字段保留，不依赖 sleep。
+依赖 [Core 共享 fixture](../../tests/core/conftest.py) 隔离配置根目录与 cwd，路径测试额外将 HOME 指向临时目录。不读取真实凭据，不请求模型或 MCP 服务，不访问用户现有数据库。排序通过固定时间数据验证；更新时间以调用前后的 UTC 秒时间为范围，并重新打开数据库检查提交及字段保留，不依赖 sleep。
 
 ## 执行
 
 ```bash
-uv run pytest -q tests/coding_agent/test_store.py --tb=no
-basedpyright --pythonpath .venv/bin/python src/omt/coding_agent/store.py tests/coding_agent/test_store.py
+uv run pytest -q tests/core/test_store.py --tb=no
+basedpyright --pythonpath .venv/bin/python src/omt/core/store.py tests/core/test_store.py
 ```
 
 ## 覆盖限制

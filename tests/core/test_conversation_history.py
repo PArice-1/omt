@@ -13,7 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from omt.agent.agent import Agent
-from omt.coding_agent.conversation import Conversation
+from omt.core.conversation import Conversation
 from omt.cli.terminal import display_history
 
 

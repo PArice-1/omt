@@ -25,11 +25,11 @@ from langgraph.prebuilt import ToolRuntime
 from pydantic import Field
 
 from omt.agent.agent import Agent
-from omt.coding_agent import settings as settings_module
-from omt.coding_agent.conversation import Conversation
+from omt.core import settings as settings_module
+from omt.core.conversation import Conversation
 from omt.cli.terminal import print_event
-from omt.coding_agent.events import EventHandler, RunEvent
-from omt.coding_agent.tools.read import read
+from omt.core.events import EventHandler, RunEvent
+from omt.core.tools.read import read
 
 
 def make_conversation(

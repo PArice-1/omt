@@ -5,8 +5,8 @@ from typing import ClassVar, Literal
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from omt.coding_agent.session_manager import validate_message
-from omt.coding_agent.store import SessionRecord
+from omt.core.session_manager import validate_message
+from omt.core.store import SessionRecord
 
 
 class CreateSessionRequest(BaseModel):

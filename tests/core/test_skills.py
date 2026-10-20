@@ -5,12 +5,12 @@ from typing import cast
 
 import pytest
 
-from omt.coding_agent.skills import (
+from omt.core.skills import (
     SkillDefinition,
     discover_skills,
     render_skills_prompt,
 )
-from omt.coding_agent.tools.read import read
+from omt.core.tools.read import read
 
 
 def _write_skill(root: Path, directory: str, content: str) -> Path:

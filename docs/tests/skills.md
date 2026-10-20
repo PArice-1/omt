@@ -2,8 +2,8 @@
 
 ## 对象与目的
 
-- 源码：[skills.py](../../src/omt/coding_agent/skills.py)。
-- 测试：[test_skills.py](../../tests/coding_agent/test_skills.py)。
+- 源码：[skills.py](../../src/omt/core/skills.py)。
+- 测试：[test_skills.py](../../tests/core/test_skills.py)。
 - 公开调用方式：`discover_skills(roots)` 返回 `SkillDiscoveryResult`，`render_skills_prompt(skills)` 返回 Markdown 字符串。
 - 保证发现结果保留 Skill 文件的绝对路径，模型目录只包含元数据与加载规则，全文仍可通过已有 read 工具按需取得。
 - 本说明覆盖独立发现与渲染模块；Conversation 现已消费目录并初始化系统消息，接入测试与契约另见 [Conversation 测试说明](conversation.md)。工具集合未改变。
@@ -39,9 +39,9 @@
 ## 执行
 
 ```bash
-uv run pytest -q tests/coding_agent/test_skills.py --tb=no
+uv run pytest -q tests/core/test_skills.py --tb=no
 uv run pytest -q --tb=no
-basedpyright --pythonpath .venv/bin/python src/omt/coding_agent/skills.py tests/coding_agent/test_skills.py
+basedpyright --pythonpath .venv/bin/python src/omt/core/skills.py tests/core/test_skills.py
 git diff --check
 ```
 

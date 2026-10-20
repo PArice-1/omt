@@ -16,8 +16,8 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from omt.agent.agent import Agent
 from omt.cli.app import main
 from omt.cli.settings import CliSettings
-from omt.coding_agent.session_manager import SessionManager
-from omt.coding_agent.store import SessionStore
+from omt.core.session_manager import SessionManager
+from omt.core.store import SessionStore
 
 
 @pytest.fixture

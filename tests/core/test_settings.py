@@ -1,4 +1,4 @@
-"""测试对象：src/omt/coding_agent/settings.py::Settings、load_settings。
+"""测试对象：src/omt/core/settings.py::Settings、load_settings。
 
 覆盖内容：
 1. Settings 接受有效的 provider/model，并拒绝缺字段、空 provider 和非法字段类型。
@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from omt.coding_agent.settings import Settings, load_settings
+from omt.core.settings import Settings, load_settings
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@
 
 ## 对象与目的
 
-- 源码：[api/](../../src/omt/api/)、[session_manager.py](../../src/omt/coding_agent/session_manager.py)、[bootstrap.py](../../src/omt/coding_agent/bootstrap.py)。
+- 源码：[api/](../../src/omt/api/)、[session_manager.py](../../src/omt/core/session_manager.py)、[bootstrap.py](../../src/omt/core/bootstrap.py)。
 - 测试：[test_api.py](../../tests/api/test_api.py)。
 - 验证 HTTP Interface 的可观察响应、真实 SQLite 历史恢复、会话隔离与失败清理；不以 mock 写入或内部方法调用次数替代执行结果。CLI 入口见 [CLI 测试](cli.md)，共用组装见[配置测试](session-and-config.md)，事件与静默执行见 [Conversation 测试](conversation.md)。
 
@@ -28,7 +28,7 @@
 
 test_cli_and_http_share_one_manager_without_leaking_terminal_output 使用同一事件循环和 Manager：HTTP 创建空会话，CLI /resume 后执行一轮，再由 HTTP 追加。预期同一 ID 的用户/助手四条消息完整且无重复；CLI 回答只打印一次，后续 HTTP 回答没有终端输出。它验证单轮事件回调隔离与共用历史规则，不验证两个独立进程共享锁。
 
-共用配置类型从 api.settings 移至 coding_agent.configuration；ApiSettings 及公开 HTTP 字段不变。默认 lifespan 现在委托 bootstrap.open_session_manager，原组装测试仍验证预建库、MCP 类型、工具、系统提示词、关闭后拒绝操作等可观察行为。
+共用配置类型从 api.settings 移至 core.configuration；ApiSettings 及公开 HTTP 字段不变。默认 lifespan 现在委托 bootstrap.open_session_manager，原组装测试仍验证预建库、MCP 类型、工具、系统提示词、关闭后拒绝操作等可观察行为。
 
 ## 隔离方式
 
@@ -41,8 +41,8 @@ test_cli_and_http_share_one_manager_without_leaking_terminal_output 使用同一
 
 ```bash
 uv run pytest -q tests/api/test_api.py --tb=no
-uv run pytest -q tests/api tests/cli tests/coding_agent/test_conversation.py tests/coding_agent/test_conversation_history.py tests/coding_agent/test_bootstrap.py --tb=no
-basedpyright --pythonpath .venv/bin/python src/omt/api src/omt/cli src/omt/coding_agent/bootstrap.py src/omt/coding_agent/configuration.py src/omt/coding_agent/events.py src/omt/coding_agent/session_manager.py src/omt/coding_agent/conversation.py tests/api/test_api.py
+uv run pytest -q tests/api tests/cli tests/core/test_conversation.py tests/core/test_conversation_history.py tests/core/test_bootstrap.py --tb=no
+basedpyright --pythonpath .venv/bin/python src/omt/api src/omt/cli src/omt/core/bootstrap.py src/omt/core/configuration.py src/omt/core/events.py src/omt/core/session_manager.py src/omt/core/conversation.py tests/api/test_api.py
 ```
 
 ## 覆盖限制

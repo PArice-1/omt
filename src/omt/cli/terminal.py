@@ -10,8 +10,8 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.document import Document
 from prompt_toolkit.validation import ValidationError, Validator
 
-from omt.coding_agent.events import RunEvent
-from omt.coding_agent.session_manager import validate_message
+from omt.core.events import RunEvent
+from omt.core.session_manager import validate_message
 
 
 class InputValidator(Validator):

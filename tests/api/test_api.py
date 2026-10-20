@@ -23,11 +23,11 @@ from pydantic import Field, SecretStr, ValidationError
 from omt.agent.agent import Agent
 from omt.api.app import create_app
 from omt.api.settings import ApiSettings
-from omt.coding_agent.configuration import StdioServerSettings, HttpServerSettings
-from omt.coding_agent import bootstrap, settings as settings_module
+from omt.core.configuration import StdioServerSettings, HttpServerSettings
+from omt.core import bootstrap, settings as settings_module
 from omt.ai.model import Model
-from omt.coding_agent.session_manager import SessionError, SessionManager
-from omt.coding_agent.store import SessionStore
+from omt.core.session_manager import SessionError, SessionManager
+from omt.core.store import SessionStore
 
 
 TOKEN = "test-only-http-token-not-a-model-key"

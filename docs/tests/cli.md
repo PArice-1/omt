@@ -2,7 +2,7 @@
 
 ## 对象与目的
 
-源码：[app.py](../../src/omt/cli/app.py)、[terminal.py](../../src/omt/cli/terminal.py)、[settings.py](../../src/omt/cli/settings.py)，共同使用 [SessionManager](../../src/omt/coding_agent/session_manager.py) 和 [bootstrap](../../src/omt/coding_agent/bootstrap.py)。
+源码：[app.py](../../src/omt/cli/app.py)、[terminal.py](../../src/omt/cli/terminal.py)、[settings.py](../../src/omt/cli/settings.py)，共同使用 [SessionManager](../../src/omt/core/session_manager.py) 和 [bootstrap](../../src/omt/core/bootstrap.py)。
 
 测试：[test_app.py](../../tests/cli/test_app.py)、[test_terminal.py](../../tests/cli/test_terminal.py)、[test_lifecycle.py](../../tests/cli/test_lifecycle.py)。命令选择与恢复另见 [/resume 测试](resume.md)；底层模型解析另见[配置与组装测试](session-and-config.md)。
 
@@ -55,7 +55,7 @@ CLI/API 共用 Manager 的补充集成场景在 [test_api.py](../../tests/api/te
 
 ```bash
 uv run pytest -q tests/cli --tb=no
-uv run pytest -q tests/cli tests/api tests/coding_agent/test_bootstrap.py tests/coding_agent/test_conversation.py tests/coding_agent/test_conversation_history.py --tb=no
+uv run pytest -q tests/cli tests/api tests/core/test_bootstrap.py tests/core/test_conversation.py tests/core/test_conversation_history.py --tb=no
 basedpyright --pythonpath .venv/bin/python src/omt/cli tests/cli
 ```
 

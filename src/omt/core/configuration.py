@@ -7,7 +7,7 @@ from langchain_mcp_adapters.sessions import Connection
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from omt.coding_agent import settings
+from omt.core import settings
 
 
 class StdioServerSettings(BaseModel):

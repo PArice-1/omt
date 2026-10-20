@@ -1,4 +1,4 @@
-"""测试对象：src/omt/coding_agent/tools/read.py::read（LangChain 工具接口）。
+"""测试对象：src/omt/core/tools/read.py::read（LangChain 工具接口）。
 
 覆盖内容：
 1. 读取 UTF-8 全文；接受 Path、字符串、相对路径和 ~ 路径。
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from omt.coding_agent.tools.read import read
+from omt.core.tools.read import read
 
 
 @pytest.mark.parametrize("use_string_path", [False, True])

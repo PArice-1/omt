@@ -8,8 +8,8 @@ from contextlib import AbstractAsyncContextManager
 
 from prompt_toolkit import PromptSession
 
-from omt.coding_agent.bootstrap import open_session_manager
-from omt.coding_agent.session_manager import SessionError, SessionManager
+from omt.core.bootstrap import open_session_manager
+from omt.core.session_manager import SessionError, SessionManager
 
 from .commands import CliState, handle_command
 from .settings import CliSettings

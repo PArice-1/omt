@@ -15,7 +15,7 @@ uv run omt
 uv run python -m omt.cli
 ```
 
-Python 同步入口为 `omt.cli.app.main()`；已有事件循环应 `await omt.cli.app.run_cli()`，不能嵌套 asyncio.run。旧 `omt.coding_agent.session`、`omt.coding_agent.runtime` 与 `CreateAgentSession` 已移除，低层会话对象为 `omt.coding_agent.conversation.Conversation`，默认不显示过程。
+Python 同步入口为 `omt.cli.app.main()`；已有事件循环应 `await omt.cli.app.run_cli()`，不能嵌套 asyncio.run。共用核心包已由 `omt.coding_agent` 更名为 `omt.core`，不提供旧包兼容导入；此前的 session/runtime 模块与 `CreateAgentSession` 也已移除。低层会话对象为 `omt.core.conversation.Conversation`，默认不显示过程。
 
 ## 启动配置
 

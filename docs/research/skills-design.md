@@ -1,6 +1,6 @@
 # Skills 模块调研与 OMT 初步建议
 
-本文记录方案调研与建议，不作为当前功能的唯一依据。后续已在 `coding_agent/skills.py` 实现元数据发现与目录提示词生成，Conversation 也已将目录与可选外部提示词文本合并为初始 SystemMessage；当前契约见[架构说明](../architecture.md)，验证见[Skills 测试说明](../tests/skills.md)。
+本文记录方案调研与建议，不作为当前功能的唯一依据。后续已在 `core/skills.py` 实现元数据发现与目录提示词生成，Conversation 也已将目录与可选外部提示词文本合并为初始 SystemMessage；当前契约见[架构说明](../architecture.md)，验证见[Skills 测试说明](../tests/skills.md)。
 
 ## 1. 核心模型
 
@@ -39,12 +39,12 @@ Skill 是流程与知识，Tool 是可执行能力。加载 Skill 不等于执�
 
 已核对以下本地文件：
 
-- `src/omt/coding_agent/bootstrap.py`：共用组装模型、工具和 Manager；由 Manager 在空会话创建 Conversation 时发现 Skills 并初始化系统消息，而不是注入 Agent.system_prompt。旧 CLI session.py 已迁至平级 cli 模块。
+- `src/omt/core/bootstrap.py`：共用组装模型、工具和 Manager；由 Manager 在空会话创建 Conversation 时发现 Skills 并初始化系统消息，而不是注入 Agent.system_prompt。旧 CLI session.py 已迁至平级 cli 模块。
 - `src/omt/agent/agent.py`：构造函数已经支持 `system_prompt` 和 middleware；基础能力足够承载 Skill 目录提示词，无需改造执行循环。
-- `src/omt/coding_agent/tools_manager.py`：静态注册 edit/read/write/bash，可承接 Skill 文件读取和脚本运行。
+- `src/omt/core/tools_manager.py`：静态注册 edit/read/write/bash，可承接 Skill 文件读取和脚本运行。
 - `docs/architecture.md`：Conversation 管理历史和结构化事件，CLI 负责终端展示，工具循环由 LangGraph 执行。
 
-建议把文件发现、解析、冲突处理和目录渲染放在 `coding_agent` 下的 Skills 模块。原建议由入口传给 Agent.system_prompt；当前按后续需求选择在 Conversation 调用独立发现函数，初始化首条 SystemMessage，恢复已有历史不重扫。文件解析和目录渲染仍由 Skills 模块负责，不在执行核心重复实现。
+建议把文件发现、解析、冲突处理和目录渲染放在 `core` 下的 Skills 模块。原建议由入口传给 Agent.system_prompt；当前按后续需求选择在 Conversation 调用独立发现函数，初始化首条 SystemMessage，恢复已有历史不重扫。文件解析和目录渲染仍由 Skills 模块负责，不在执行核心重复实现。
 
 ## 4. 建议的第一版范围（发现、渲染与 Conversation 接入已实现，其余仍是建议）
 

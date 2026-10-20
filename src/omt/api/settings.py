@@ -5,7 +5,7 @@ from typing import ClassVar
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import SettingsConfigDict
 
-from omt.coding_agent.configuration import SessionSettings
+from omt.core.configuration import SessionSettings
 
 
 class ApiSettings(SessionSettings):

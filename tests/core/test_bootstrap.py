@@ -11,8 +11,8 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from pydantic import SecretStr
 
 from omt.agent.agent import Agent
-from omt.coding_agent.bootstrap import build_agent as _get_agent, build_model as _get_model
-from omt.coding_agent.settings import Settings, load_settings
+from omt.core.bootstrap import build_agent as _get_agent, build_model as _get_model
+from omt.core.settings import Settings, load_settings
 
 
 @pytest.fixture

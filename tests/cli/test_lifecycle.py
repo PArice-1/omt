@@ -26,11 +26,11 @@ from pydantic import Field
 from omt.agent.agent import Agent
 from omt.cli.app import main as session, run_cli
 from omt.cli.settings import CliSettings
-from omt.coding_agent import settings as agent_settings, bootstrap
-from omt.coding_agent.prompts import load_system_prompt
-from omt.coding_agent.session_manager import SessionManager
-from omt.coding_agent.settings import load_settings
-from omt.coding_agent.store import SessionStore
+from omt.core import settings as agent_settings, bootstrap
+from omt.core.prompts import load_system_prompt
+from omt.core.session_manager import SessionManager
+from omt.core.settings import load_settings
+from omt.core.store import SessionStore
 
 
 @pytest.fixture
@@ -266,8 +266,8 @@ def test_cli_sigint_exits_and_closes_manager(cli_db: Path, tmp_path: Path) -> No
         from omt.agent.agent import Agent
         import omt.cli.app as app
         from omt.cli.settings import CliSettings
-        from omt.coding_agent.session_manager import SessionManager
-        from omt.coding_agent.store import SessionStore
+        from omt.core.session_manager import SessionManager
+        from omt.core.store import SessionStore
 
         class LocalModel(FakeMessagesListChatModel):
             def bind_tools(self, tools: object, **kwargs: object) -> Self:

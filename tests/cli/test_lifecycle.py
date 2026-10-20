@@ -63,6 +63,7 @@ def model_factory(monkeypatch: pytest.MonkeyPatch) -> Mock:
     return factory
 
 
+@pytest.mark.parametrize("skills_enabled", [True, False])
 def test_cli_runs_manager_and_read_tool_without_network(
     config_dir: Path,
     tmp_path: Path,
@@ -70,7 +71,11 @@ def test_cli_runs_manager_and_read_tool_without_network(
     cli_db: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    skills_enabled: bool,
 ) -> None:
+    if not skills_enabled:
+        monkeypatch.setenv("OMT_CLI_SKILL_ROOTS", "[]")
+
     class ToolCapableModel(FakeMessagesListChatModel):
         seen_messages: list[list[BaseMessage]] = Field(default_factory=list)
 
@@ -123,8 +128,12 @@ def test_cli_runs_manager_and_read_tool_without_network(
     assert len(model.seen_messages) == 3
     system_text = model.seen_messages[0][0].text
     assert system_text.startswith(load_system_prompt())
-    assert "## 可用 Skills" in system_text
-    assert str(skill) in system_text
+    if skills_enabled:
+        assert "## 可用 Skills" in system_text
+        assert str(skill) in system_text
+    else:
+        assert "## 可用 Skills" not in system_text
+        assert str(skill) not in system_text
     assert "SKILL_BODY_MARKER" not in system_text
     for messages in model.seen_messages:
         assert isinstance(messages[0], SystemMessage)

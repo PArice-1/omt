@@ -80,7 +80,7 @@ uv run pytest -q --tb=no
 
 确认失败输出不含敏感数据后，再对具体用例使用 `--tb=short` 排查。不要依赖隐藏堆栈来替代测试隔离。
 
-- [core/conftest.py](../../tests/core/conftest.py) 的自动 fixture 将 `settings.root` 和 cwd 指向每例的 `tmp_path`，并在前后清空设置缓存。配置测试不能只 `chdir`：实际配置目录可能固定在用户 HOME。Conversation 测试也同时隔离默认用户和项目 Skills。CLI 测试的 [cli/conftest.py](../../tests/cli/conftest.py) 额外清理入口环境变量，并显式关闭默认本机 MCP。
+- [core/conftest.py](../../tests/core/conftest.py) 的自动 fixture 将 `settings.root` 和 cwd 指向每例的 `tmp_path`，并在前后清空设置缓存。配置测试不能只 `chdir`：实际配置目录可能固定在用户 HOME。Conversation 测试也同时隔离默认用户和项目 Skills。CLI 测试的 [cli/conftest.py](../../tests/cli/conftest.py) 额外清理入口环境变量，并显式关闭默认本机 MCP，将 CLI 的 Skills 搜索覆盖为 tmp_path/skills，避免读取在设置类导入时已展开的真实 ~/.agents/skills。
 - [ai/conftest.py](../../tests/ai/conftest.py) 在 SDK 初始化处返回本地假模型，保留 Model 到提供商初始化函数的内部调用链。
 - 顶层 Agent 和 core 下的 Conversation 测试直接注入假模型，不读取配置或真实认证；Conversation 测试另用局部自动 fixture 隔离 settings.root 与 cwd，避免扫描真实 Skills。
 - 文件操作只使用临时目录。Bash 测试只执行本地假数据命令，并清理测试启动的进程；POSIX/Bash 或 FIFO 不可用时允许有明确原因的跳过。

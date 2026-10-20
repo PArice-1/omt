@@ -105,6 +105,31 @@ def test_cli_and_api_configuration_are_independent(monkeypatch: pytest.MonkeyPat
     assert not hasattr(options, "access_token")
 
 
+def test_cli_fixture_uses_only_temporary_skill_roots(tmp_path: Path) -> None:
+    assert CliSettings().skill_roots == [tmp_path / "skills"]
+
+
+@pytest.mark.parametrize("selection", ["default", "custom", "disabled"])
+def test_cli_skill_roots_use_user_default_or_explicit_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selection: str,
+) -> None:
+    """selection 分别验证默认用户目录、自定义相对目录和空列表关闭；不扫描目录。"""
+    monkeypatch.setenv("OMT_API_SKILL_ROOTS", '["/unused-api-skills"]')
+    if selection == "default":
+        monkeypatch.delenv("OMT_CLI_SKILL_ROOTS")
+        expected = [Path("~/.agents/skills").expanduser().resolve()]
+    elif selection == "custom":
+        monkeypatch.setenv("OMT_CLI_SKILL_ROOTS", '["./custom-skills"]')
+        expected = [tmp_path / "custom-skills"]
+    else:
+        monkeypatch.setenv("OMT_CLI_SKILL_ROOTS", "[]")
+        expected = []
+
+    roots = CliSettings().skill_roots
+    assert roots is not None
+    assert [root.resolve() for root in roots] == expected
+
+
 def test_cli_preserves_legacy_mcp_default_but_can_disable_it(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OMT_CLI_MCP_SERVERS")
     options = CliSettings()

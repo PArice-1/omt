@@ -1,5 +1,6 @@
 """CLI 配置和终端隔离，不读取用户配置或占用真实输入终端。"""
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
@@ -19,6 +20,8 @@ def isolated_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[No
         monkeypatch.delenv(f"OMT_CLI_{key}", raising=False)
     monkeypatch.setenv("OMT_CLI_DB_PATH", str(tmp_path / "cli.sqlite"))
     monkeypatch.setenv("OMT_CLI_MCP_SERVERS", "{}")
+    # 默认目录在 Settings 导入时已展开，改 HOME/root 不能隔离，必须显式覆盖。
+    monkeypatch.setenv("OMT_CLI_SKILL_ROOTS", json.dumps([str(tmp_path / "skills")]))
     monkeypatch.setattr("omt.cli.app.PromptSession", lambda: None)
     yield
     agent_settings.load_settings.cache_clear()

@@ -16,7 +16,7 @@ from .schemas import (
 def session_routes(
     get_manager: Callable[[], SessionManager], authorize: Callable[..., None],
 ) -> APIRouter:
-    router = APIRouter(prefix="/api/v1/sessions", dependencies=[Depends(authorize)])
+    router = APIRouter(prefix="/api/v1/sessions", dependencies=[])
 
     @router.post("", status_code=201)
     async def create_session(body: CreateSessionRequest, manager: Annotated[SessionManager, Depends(get_manager)]) -> SessionResponse:

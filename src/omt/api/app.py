@@ -56,7 +56,6 @@ def create_app(
 
     app = FastAPI(
         title="OMT", version="0.1.0", lifespan=lifespan,
-        docs_url=None, redoc_url=None, openapi_url=None,
     )
     bearer = HTTPBearer(auto_error=False)
 

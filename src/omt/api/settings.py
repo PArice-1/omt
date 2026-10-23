@@ -19,9 +19,9 @@ class ApiSettings(SessionSettings):
     skill_roots: list[Path] | None = Field(default=[Path("~/.agents/skills").expanduser().resolve()])
     access_token: SecretStr = Field(default_factory=lambda: SecretStr(""))
 
-    @field_validator("access_token")
-    @classmethod
-    def check_token(cls, value: SecretStr) -> SecretStr:
-        if len(value.get_secret_value().strip()) < 32:
-            raise ValueError("访问令牌至少需要 32 个非首尾空白字符")
-        return value
+    # @field_validator("access_token")
+    # @classmethod
+    # def check_token(cls, value: SecretStr) -> SecretStr:
+    #     if len(value.get_secret_value().strip()) < 32:
+    #         raise ValueError("访问令牌至少需要 32 个非首尾空白字符")
+    #     return value

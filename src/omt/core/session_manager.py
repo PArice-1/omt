@@ -211,6 +211,29 @@ class SessionManager:
             _, warnings = await self._touch(session_id)
             return RunResult(session_id, run_id, answer, warnings)
 
+    async def rebuild(self, agent: Agent) -> "SessionManager":
+        """空闲时用新 agent 创建继任 Manager，成功后关闭当前实例。
+
+        agent 必须使用同一个 Checkpointer；Store、目录、提示词、Skills、容量及
+        失败会话保护完整保留。不复制历史、不登记会话。有运行/历史/激活操作时
+        立即拒绝，不为切换取消请求。生命周期由入口顺序管理；构建失败时当前
+        实例仍可用，成功后调用方须改用返回的新实例。
+        """
+        self._ensure_open()
+        if self._busy or self._active:
+            raise SessionError("manager_busy", "有会话操作正在执行，暂时不能切换模型")
+        if agent.agent.checkpointer is not self._agent.agent.checkpointer:
+            raise ValueError("重建 Manager 必须复用同一个 Checkpointer")
+        successor = SessionManager(
+            agent, self._store, workspace_path=self._workspace,
+            system_prompt=self._system_prompt, skill_roots=self._skill_roots,
+            max_concurrent_runs=self._max_runs,
+        )
+        successor._tainted.update(self._tainted)
+        # 空闲检查至交接之间不让出事件循环；旧实例不再接纳操作。
+        await self.aclose()
+        return successor
+
     async def aclose(self) -> None:
         """拒绝新操作，取消并等待活跃操作；由调用方随后关闭 Checkpointer。"""
         self._closed = True

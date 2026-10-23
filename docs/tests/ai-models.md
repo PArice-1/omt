@@ -19,12 +19,16 @@
 | 创建可用模型 | 已注册 provider、HTTP URL、假 Key 和 temperature | 构造立即初始化；保存 provider/base_url，client.model 为可调用的本地模型 | test_ai.py：test_constructor_initializes_and_stores_usable_model |
 | 显式初始化参数 | 在构造后调用私有初始化方法并传入另一个模型名及 max_tokens | 指定值沿真实内部调用链传到 SDK 初始化位置，不被旧值覆盖 | test_ai.py：test_private_init_model_returns_model_using_explicit_parameters |
 | 注册表路由 | DeepSeek 配置与额外 args | 返回 SDK 替身；参数正确传递，调用者的 args 字典保持原值 | [test_models_manager.py](../../tests/ai/test_models_manager.py)：test_registered_provider_returns_usable_model |
+| DeepSeek 启用思考 | effort 为 high/max，额外请求体含自定义字段和 disabled thinking，另传 max_tokens | 返回可调用假模型；SDK 收到原 effort 和 enabled thinking；保留其他选项，不修改原请求体 | test_deepseek.py：test_reasoning_effort_enables_thinking_and_preserves_options |
+| 不主动配置思考 | effort 为 Python None 或字符串 none，extra_body 为空或含自定义字段；原有效参数用例不传 effort | 不向 SDK 传 reasoning_effort，不新增 thinking；已有请求体保持原值，不伪造 disabled | test_deepseek.py：test_no_reasoning_effort_does_not_configure_thinking、test_valid_parameters_return_usable_model |
 | 类型转换 | URL/Key 分别使用字符串或 HttpUrl/SecretStr | 接受合法输入；传给 SDK 的 URL 是字符串，Key 保持 SecretStr | [test_deepseek.py](../../tests/ai/test_deepseek.py)：test_valid_parameters_return_usable_model |
 | 未注册 provider | 空或未知 provider | 拒绝创建，不调用 SDK 初始化 | test_ai.py、test_models_manager.py 的 unknown_provider 用例 |
 | 缺失或空白 Key | 无 Key、None、空串、空格或换行 | 缺失/非法参数校验失败；空白 Key 被明确拒绝，不调用 SDK | 三个测试文件的 missing/blank/validation 用例 |
 | 错误 URL 或参数类型 | 非 HTTP(S) URL、非法 provider/model/Key 类型 | 对应参数位置校验失败 | test_deepseek.py：test_invalid_parameters_are_rejected |
 | 参数校验异常包装 | 提供商初始化抛 Pydantic ValidationError | 注册表层转为带参数错误提示的 ValueError，并保留原始 cause | test_models_manager.py：test_validation_error_is_wrapped_with_original_cause |
 | 外部初始化失败 | SDK 替身抛 ValueError 或 RuntimeError | 原始异常继续传播，不返回错误字符串或伪模型 | 三个文件的 initialization_error / error_propagates 用例 |
+
+正常初始化用例同时核对 `configurable_fields=None`、`config_prefix=None`：OMT 的 Model 需要直接可调用的聊天模型，SDK 工厂不返回运行时再选模型的包装器。此项覆盖 test_ai.py、test_models_manager.py 和 test_deepseek.py 的正常初始化断言。
 
 ## 隔离方式
 
@@ -40,6 +44,6 @@ uv run pytest -q tests/ai --tb=no
 
 ## 覆盖限制
 
-- 不证明真实 DeepSeek 服务接受某个模型名或参数，也不验证账单、速率限制、网络重试或输出质量。
+- 不证明真实 DeepSeek 服务接受某个模型名或 effort，也不验证账单、速率限制、网络重试或输出质量。适配参考 [DeepSeek 思考模式协议](https://api-docs.deepseek.com/guides/thinking_mode/)；未主动配置不等于关闭服务端默认思考模式。
 - 目前只有 DeepSeek 注册项；其他提供商和 OAuth 未覆盖。
 - 会话如何从多个配置文件选择参数，由 [Session 与配置测试](session-and-config.md) 验证。

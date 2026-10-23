@@ -13,25 +13,32 @@
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
 | Settings 字段 | 合法 provider/model，或缺字段、错误类型、空白值 | 合法值可加载，缺失/非法选择被拒绝 | test_settings.py 的 accepts/reject 用例；test_configuration_files.py：test_settings_reject_blank_selection |
+| 可选思考等级 | settings.json 不提供 defaultThinkingLevel，或提供 null/media/high/none/custom | 未配置和 null 读取为 None，组装时按 none 处理；非空显式等级可读取，空白/错误类型拒绝 | test_settings.py：test_settings_accept_valid_values、test_load_settings_reads_thinking_level、test_settings_reject_invalid_thinking_level |
 | 文件与缓存 | 临时 settings.json、文件缺失、错误 JSON、修复后重试、成功后修改文件 | 错误传播；成功结果缓存，cache_clear 后读取新值；失败不固化为缓存结果 | test_settings.py 的 load/missing/invalid/cached/retried 用例 |
 | API Key 类型 | auth 中提供假 Key | 加载为 SecretStr，可明确取测试值，但 repr 不暴露原值 | test_auth_loads_api_key_as_masked_secret |
 | 非 API Key 认证 | OAuth 类型附带 access/refresh | 加载类型，不误用为 key；额外 token 不显示在对象 repr | test_auth_retains_type_without_treating_oauth_as_api_key |
 | 非法认证结构 | 尾随逗号、缺 type、错误结构，携带测试敏感标记 | 带文件提示的错误；完整格式化异常也不含该标记 | test_invalid_auth_errors_do_not_expose_credentials |
 | 认证重读 | 假 Key 改变，或 auth 文件不存在 | 下次读取新值；缺文件抛异常 | test_auth_is_reread_after_credentials_change、test_missing_auth_file_raises |
 | 目录字段 | 模型带 URL、provider 及能力/价格额外字段 | 连接字段可用，额外元数据不妨碍加载 | test_model_store_parses_model_url_and_ignores_catalog_metadata |
+| 思考映射结构 | 目录包含 media→high、none→none、unsupported→null；另输入非字典或数字/空白值 | 有效映射保留 null 和字符串 none 的区别；非法结构拒绝并提示 thinkingLevelMap | test_configuration_files.py：test_model_store_parses_model_url_and_ignores_catalog_metadata、test_model_store_rejects_invalid_thinking_mapping |
 | 非法目录 | 错误 JSON、错误顶层、缺 URL、非 HTTP(S) URL、空 ID、重复 ID、缺文件 | 拒绝目录或报文件缺失，不选择一个凑合使用 | test_invalid_model_store_is_rejected、test_missing_model_store_file_raises |
 
 ## 共用模型与 Agent 组装
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
-| 三份配置拼接 | 假默认选择、认证与目录匹配 | provider/model/精确 URL/SecretStr 传至 SDK 替身，返回可用模型 | test_get_model_joins_settings_auth_and_matching_catalog_entry |
+| 三份配置拼接 | 假默认选择、认证与目录匹配，省略 defaultThinkingLevel，目录仍有 media→high | provider/model/精确 URL/SecretStr 传至 SDK 替身，不因目录存在映射就默认开启 thinking，不向 SDK 发送 effort，返回可用模型 | test_get_model_joins_settings_auth_and_matching_catalog_entry |
+| 显式思考等级 | high→max 或 none→high | high 使用映射后的 max，不误用原等级名；显式 none 即使在目录中映射到 high 也不主动配置 thinking/effort，返回可用模型 | test_get_model_maps_selected_thinking_level |
+| 未配置或所选思考映射不可用 | 等级为 None/media/none，分别结合 thinkingLevelMap 缺失、为 null、为空、仅支持 high 或 media→null | 按 none 处理，返回可用模型；不向 SDK 发送 effort，也不新增 thinking，不因缺失能力中断初始化 | test_get_model_uses_none_when_thinking_is_unconfigured_or_unavailable |
 | 认证不可用 | provider 无认证、Key 缺失/空白、OAuth/bearer/未知类型 | 初始化前报错，SDK 替身未调用；错误不含测试 token | test_get_model_rejects_missing_or_blank_auth、test_get_model_explicitly_rejects_unsupported_auth_types |
 | 提供商与目录不匹配 | provider 未注册、目录缺 provider/model、模型 provider 不符 | 明确拒绝，不回退到其他模型 | test_get_model_rejects_unregistered_provider_before_initializing_model、test_get_model_rejects_missing_or_mismatched_catalog |
-| 精确 URL 选择 | 所选模型不是 models 列表第一项 | 只使用所选 ID 的 URL | test_get_model_uses_url_of_exact_selected_model_not_first_entry |
+| 精确 URL 选择 | 所选模型不是 models 列表第一项，首项没有思考映射 | 只使用所选 ID 的 URL 和思考映射，不要求未选模型支持思考 | test_get_model_uses_url_of_exact_selected_model_not_first_entry |
+| 目录快照匹配 | 显式传入 definition，ID 或 provider 与设置不同 | 初始化前拒绝，SDK 不调用；不能为保持展示快照而绕过模型选择约束 | test_get_model_rejects_mismatched_definition_snapshot |
 | Agent 组装 | Model 包装对象与内置工具，MCP 发现返回空列表的异步替身 | 等待异步 build_agent，传入 client.model，工具集合包含全部静态注册项 | test_get_agent_uses_underlying_chat_model_and_builtin_tools |
 
-上述 test_bootstrap.py 用例沿用原 test_get_model/test_get_agent 名称，仅被测函数改为共用 bootstrap 实现。资源管理器 open_session_manager 的实际创建/关闭、预建库校验和提示词传递由 [CLI](cli.md) 与 [HTTP](api.md) 集成测试验证；共用启动选项 SessionSettings 的路径/MCP 校验主要在 HTTP 配置与 CLI 配置用例中覆盖。
+需求调整说明：思考配置从“默认 media、缺映射即报错”改为“未配置或无对应能力统一按 none 处理”，因此原缺失映射异常测试改为验证可用模型和不发送思考参数；配置语法、字段类型与认证错误的拒绝断言保留。
+
+上述 test_bootstrap.py 用例沿用原 test_get_model/test_get_agent 名称，仅被测函数改为共用 bootstrap 实现。固定模型的 open_session_manager 和可切换的 open_session_runtime 的实际创建/关闭、预建库校验和提示词传递由 [CLI](cli.md)、[推理强度](thinking.md)与 [HTTP](api.md) 集成测试验证；共用启动选项 SessionSettings 的路径/MCP 校验主要在 HTTP 配置与 CLI 配置用例中覆盖。
 
 ## 隔离方式
 

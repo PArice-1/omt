@@ -84,6 +84,7 @@ def test_model_store_parses_model_url_and_ignores_catalog_metadata(config_dir: P
                 "id": "deepseek-chat", "provider": "deepseek",
                 "baseUrl": "https://example.test/v1", "reasoning": True,
                 "cost": {"input": 1}, "compat": {"supportsStore": False},
+                "thinkingLevelMap": {"media": "high", "unsupported": None, "none": "none"},
             }],
             "checkedAt": 123,
         }
@@ -94,6 +95,7 @@ def test_model_store_parses_model_url_and_ignores_catalog_metadata(config_dir: P
     assert model.id == "deepseek-chat"
     assert model.provider == "deepseek"
     assert str(model.baseUrl) == "https://example.test/v1"
+    assert model.thinkingLevelMap == {"media": "high", "unsupported": None, "none": "none"}
 
 
 @pytest.mark.parametrize("content", [
@@ -110,6 +112,19 @@ def test_invalid_model_store_is_rejected(config_dir: Path, content: str):
     (config_dir / "model-store.json").write_text(content, encoding="utf-8")
 
     with pytest.raises(ValueError, match="model-store.json"):
+        load_model_store()
+
+
+@pytest.mark.parametrize("mapping", [[], "high", {"media": 1}, {"media": ""}, {"media": "   "}])
+def test_model_store_rejects_invalid_thinking_mapping(config_dir: Path, mapping: object) -> None:
+    _ = (config_dir / "model-store.json").write_text(json.dumps({
+        "deepseek": {"models": [{
+            "id": "deepseek-chat", "baseUrl": "https://example.test/v1",
+            "thinkingLevelMap": mapping,
+        }]},
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="thinkingLevelMap"):
         load_model_store()
 
 

@@ -10,7 +10,8 @@
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
-| 鉴权和输入 | 缺失/错误/非 Bearer 认证；空白、NUL、超长、非字符串消息；额外 workspace 字段 | 业务请求 401 或 422，不产生会话；响应不回显 input；health 无需认证，公开 docs 关闭 | test_http_auth_validation_and_health |
+| 免认证业务接口 | 未配置或保留旧令牌，分别不带请求头、带旧令牌、错误 Bearer 或 Basic 头；本地假模型完成一轮 | 四个会话接口均正常返回，历史包含本轮问答；配置令牌不自动恢复鉴权 | test_http_sessions_do_not_require_bearer |
+| 输入与公开文档 | 空白、NUL、超长、非字符串消息；额外 workspace 字段；访问 health、docs、redoc、openapi.json | 非法输入 422，不产生会话或调用模型，不回显 input；health 及文档端点无需认证且可访问 | test_http_input_validation_and_health |
 | 完整工具回合与跨应用继续 | 假模型调用本地工具，返回 artifact 和元数据；新建应用、Manager 与 Saver 后继续旧 ID | 200 仅返回最终回答；历史包含工具关联但无系统消息/artifact/元数据；两轮不重复上下文；索引标题不变、修改时间刷新；终端无过程打印 | test_http_multiturn_restart_empty_session_and_history_projection |
 | 空会话跨应用首轮 | 只创建索引，不执行；重新打开应用 | 读取历史为空，重启后能开始首轮，不把无检查点误判为未完成历史 | 同上 |
 | 不存在、跨目录和未完成 | 临时库包含其他目录记录，以及 HumanMessage 结尾的真实检查点 | 列表过滤目录，跨目录及不存在返回 404；未完成返回 409，不调用模型 | test_http_missing_foreign_and_incomplete_sessions |
@@ -18,9 +19,12 @@
 | 完成后更新时间失败 | 工具/模型执行正常，只让 Store 更新时间抛 SQLite 异常 | 200 completed 保留回答与已提交历史，warnings 明确部分失败，不诱导重跑 | test_timestamp_failure_returns_completed_with_warning |
 | 同会话互斥、全局容量 | 异步工具等待期间对同/不同 ID 再次运行；全局上限分别为 1、2 | 同 ID session_busy；满载 capacity_exceeded；上限 2 时其他会话独立完成，不混入第一会话消息 | test_manager_concurrency_cancellation_and_shutdown |
 | 取消与关闭 | 取消等待工具的任务，或调用 Manager.aclose | 工具 finally 执行，任务终止，容量释放；关闭后拒绝新运行，检查点连接在 Manager 清理后退出 | 同上 |
-| 启动失败关闭 | 令牌缺失/空白、数据库缺失、工作目录不匹配、sessions 表缺失 | 配置或启动失败；不创建空库，不提前读取模型配置 | test_settings_and_startup_fail_closed |
+| 可选访问令牌 | 不提供令牌，或显式提供空字符串、空白、短令牌及旧格式令牌 | 配置均可创建，保留配置原值但 repr 不暴露非空白令牌；仅保留字段兼容，不启用认证 | test_settings_accept_optional_access_token |
+| 启动失败关闭 | 在无需令牌的配置下，数据库缺失、工作目录不匹配或 sessions 表缺失；另用环境变量提供假令牌 | 启动仍失败，不创建空库、不提前读取模型配置；环境变量仍可读取 | test_settings_and_startup_fail_closed |
 | 默认 lifespan 共用组装 | 临时假 settings，SDK 包装对象/MCP 发现为替身，真实默认 bootstrap/Store/Agent/Saver | 应用工厂创建时无模型/MCP 副作用；两轮成功且每个 lifespan 只初始化一次模型/发现；退出后业务请求 503 | test_default_lifespan_builds_dependencies_once_and_cleans_up |
-| MCP 配置和敏感值 | 环境变量提供测试 HTTP MCP 配置，短测试令牌触发校验失败 | 默认禁用 MCP；显式配置转换为正确 Connection；repr/格式化异常不回显测试令牌及 header | test_mcp_configuration_is_explicit_and_secrets_are_not_rendered |
+| MCP 配置和敏感值 | 环境变量提供测试 HTTP MCP 配置，短测试令牌可读取，非法 max_concurrent_runs=0 触发校验失败 | 默认禁用 MCP；显式配置转换为正确 Connection；repr/格式化异常不回显测试令牌及 header，不因免认证取消其他配置校验 | test_mcp_configuration_is_explicit_and_secrets_are_not_rendered |
+
+需求调整说明：当前本机分支已停用令牌长度校验和路由鉴权，并开放 Swagger/OpenAPI，因此原 401、缺令牌启动失败和 docs 404 预期不再适用。测试改为验证匿名调用四个业务接口和可选令牌配置，同时保留消息校验、预建数据库/工作目录拒绝及敏感信息保护；不以删除或跳过失败用例代替契约更新。
 
 同会话/全局并发通过公开 Manager Interface 和 asyncio.Event 验证，避免用线程睡眠猜测请求时序。HTTP 层的 409 在失败重试及不完整检查点场景验证；容量错误的映射为固定 429，尚未通过并发真实网络请求验证。
 
@@ -47,7 +51,7 @@ basedpyright --pythonpath .venv/bin/python src/omt/api src/omt/cli src/omt/core/
 
 ## 覆盖限制
 
-- 不请求真实模型/MCP，不验证用户令牌有效性、网络代理、反向代理、浏览器跨域或实际端口部署。
+- 不请求真实模型/MCP，不验证网络代理、反向代理、浏览器跨域或实际端口部署。当前接口不提供令牌认证；测试通过不表示服务可以安全暴露到不可信网络。
 - “重启”是同一测试进程中重建应用和 SQLite 连接，不是实际操作系统进程重启；不覆盖多 worker/CLI 争用、持久化运行状态和幂等重试。
 - 不提供/验证 SSE、事件补发、取消 HTTP Interface 或断线后台运行。普通 JSON 断线不保证立即取消。
 - Async 工具的清理不证明任意同步工具线程、远程调用或外部进程能立即停止，也不证明工具副作用回滚。

@@ -9,7 +9,7 @@ OMT 基于 LangChain / LangGraph 构建：由模型与工具循环完成任务�
 ## 功能
 
 - **交互式 CLI**：逐步显示助手文本、工具调用及执行结果。
-- **本机 HTTP API**：通过 Bearer 令牌认证，创建会话、查询历史和执行一轮对话；当前为非流式响应。
+- **本机 HTTP API**：创建会话、查询历史和执行一轮对话；当前本机分支无需 Bearer 认证，采用非流式响应。
 - **持久化会话**：使用 SQLite 保存会话索引和 LangGraph 检查点；CLI 可通过 `/resume` 恢复已完成的历史会话。
 - **内置工具**：提供 `read`、`write`、`edit` 和 `bash`，支持文件读取、写入、精确替换及命令执行。
 - **MCP 扩展**：通过启动配置接入 `stdio` 或 `streamable_http` MCP 服务。
@@ -166,19 +166,18 @@ uv run --project /absolute/path/to/OMT omt
 完成模型配置和数据库初始化后，在目标工作目录启动：
 
 ```bash
-export OMT_API_ACCESS_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+# 当前本机分支无需配置访问令牌。
 uv run omt-api
 ```
 
-默认监听 `127.0.0.1:8000`，使用单 worker。API 默认不启用 MCP；访问令牌与模型 API Key 是两份不同的凭据。
+默认监听 `127.0.0.1:8000`，使用单 worker。API 默认不启用 MCP；当前已暂时停用访问令牌校验，即使配置令牌也不会自动恢复认证。模型 API Key 仍需配置。后端及前端代理均只应面向可信本机使用，不要向不可信网络开放。
 
-在保留上述令牌环境变量的终端中，可以先检查服务并创建会话：
+可以先检查服务并创建会话：
 
 ```bash
 curl -sS http://127.0.0.1:8000/health
 
 curl -sS http://127.0.0.1:8000/api/v1/sessions \
-  -H "Authorization: Bearer $OMT_API_ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"title":"分析项目"}'
 ```
@@ -188,12 +187,11 @@ curl -sS http://127.0.0.1:8000/api/v1/sessions \
 ```bash
 SESSION_ID='<上一步返回的 session_id>'
 curl -sS "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/runs" \
-  -H "Authorization: Bearer $OMT_API_ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"message":"请分析当前项目结构，暂不修改文件"}'
 ```
 
-执行接口等待本轮结束后返回最终回答。会话列表、历史查询、错误码和配置项见 [HTTP 使用说明](docs/api.md)。当前未开放 Swagger / OpenAPI 页面，也未实现 SSE、后台任务或取消接口。
+执行接口等待本轮结束后返回最终回答。会话列表、历史查询、错误码和配置项见 [HTTP 使用说明](docs/api.md)；前端开发或交给 AI 对接时，使用 [前端接入 API 文档](docs/frontend-api.md)。当前源码提供 `/docs`、`/redoc` 和 `/openapi.json`，但尚未实现 SSE、后台任务或取消接口。
 
 ## 配置与扩展
 
@@ -206,7 +204,7 @@ curl -sS "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/runs" \
 | `MAX_CONCURRENT_RUNS` | 同一 Manager 的运行上限，默认 `1`，不是工具并发数 |
 | `SKILL_ROOTS` | Skills 搜索路径的 JSON 数组；`[]` 关闭发现 |
 | `MCP_SERVERS` | MCP 连接配置的 JSON 对象；`{}` 关闭 MCP |
-| `ACCESS_TOKEN` | 仅 API 使用，必填，去除首尾空白后至少 32 字符 |
+| `ACCESS_TOKEN` | 仅 API 保留兼容字段；当前可不配置，不校验长度，也不启用接口认证 |
 
 当前 CLI / API 的默认 Skills 目录均为 `~/.agents/skills`。可显式指定项目自己的目录，例如在启动 CLI 前设置：
 
@@ -223,7 +221,7 @@ Skills 仅提供元数据发现与按需读取提示，不会自动执行其中�
 ├── src/omt/
 │   ├── agent/   # LangChain Agent 调用及流接口包装
 │   ├── ai/      # 模型提供商注册与初始化
-│   ├── api/     # FastAPI 入口、认证和路由
+│   ├── api/     # FastAPI 入口与路由，当前暂未启用认证
 │   ├── cli/     # 终端交互、命令与输出展示
 │   └── core/    # 会话管理、存储、配置、工具与 Skills
 ├── tests/       # 离线测试

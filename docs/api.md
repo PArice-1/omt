@@ -2,17 +2,18 @@
 
 当前提供固定工作目录、单用户、单进程的非流式 HTTP 入口。CLI `omt` 继续可用；HTTP 不解析 `/resume` 等 CLI 命令，消息中的这些文本会作为普通输入提交。
 
+面向前端开发者或负责生成前端的 AI，请优先阅读[前端接入 API 文档](frontend-api.md)：包含完整请求/响应字段、调用流程、TypeScript 客户端及错误处理约束。本文主要补充后端启动与配置。
+
 ## 启动前提
 
 1. 用 `uv sync` 安装项目及锁定依赖。
-2. 按[架构说明](architecture.md#3-模型连接与配置)配置模型。HTTP 与 CLI 共用模型配置，访问令牌不是模型 API Key。
+2. 按[架构说明](architecture.md#3-模型连接与配置)配置模型。HTTP 与 CLI 共用模型配置；当前 HTTP 免认证不影响模型 API Key 的要求。
 3. 预先创建 SQLite 数据库及 `sessions` 表，表结构见[会话索引说明](tests/store.md#接口和预建表约定)。HTTP 不自动创建目录、索引表或迁移；LangGraph 自行管理检查点表。
 4. 在可信的目标工作目录启动。文件工具和 Bash 使用进程 cwd，配置的工作目录必须与启动 cwd 一致，不能通过请求切换目录。
 
 ```bash
 # 以下是人工启动，不属于离线测试；提交消息可能计费并修改文件。
-# 使用临时环境变量，不把令牌写入源码或命令历史中的字面值。
-export OMT_API_ACCESS_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+# 当前本机分支无需配置 OMT_API_ACCESS_TOKEN。
 export OMT_API_DB_PATH="$HOME/.omt/agent/state/omt.sqlite"
 uv run omt-api
 ```
@@ -25,7 +26,7 @@ uv run omt-api
 
 | 变量 | 默认值 / 约束 |
 | --- | --- |
-| `ACCESS_TOKEN` | 必填；去除首尾空白后长度至少 32，实际比较保留原值；建议随机生成 |
+| `ACCESS_TOKEN` | 可不配置，默认空字符串；当前不校验长度，仅保留兼容字段，配置后也不会启用认证 |
 | `DB_PATH` | `~/.omt/agent/state/omt.sqlite`；必须已存在且有 sessions 表 |
 | `WORKSPACE_PATH` | 启动 cwd；规范化后必须与进程 cwd 相同 |
 | `MAX_CONCURRENT_RUNS` | `1`；正整数，满载时立即返回 429，不排队 |
@@ -49,7 +50,7 @@ stdio 还支持 env，streamable_http 支持 url 和 headers。它们都是可�
 
 ## Interface
 
-除 `/health` 外，所有业务请求都需 `Authorization: Bearer <访问令牌>`。默认关闭 `/docs`、`/redoc` 和公开 OpenAPI 端点，不配置跨域允许列表；需要前端跨域时应另行设计明确来源，不能把 CORS 当认证。
+当前本机分支已暂时停用访问令牌校验及路由鉴权，所有会话业务请求均无需 `Authorization` 请求头；即使配置访问令牌，也不会自动恢复认证。`/health`、`/docs`、`/redoc` 和 `/openapi.json` 同样无需认证，Swagger UI 可直接调试业务接口。服务未配置跨域允许列表；免认证不等于允许跨域，跨域 JSON POST 仍会触发预检。前端可使用同源代理，或另行设计明确来源，不能把 CORS 当认证。
 
 | 方法与路径 | 输入 | 成功响应 |
 | --- | --- | --- |
@@ -65,13 +66,11 @@ stdio 还支持 env，streamable_http 支持 url 和 headers。它们都是可�
 
 ```bash
 curl -sS http://127.0.0.1:8000/api/v1/sessions \
-  -H "Authorization: Bearer $OMT_API_ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"title":"分析项目"}'
 
 # 将上一步返回的 session_id 保存为 SESSION_ID。
 curl -sS "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/runs" \
-  -H "Authorization: Bearer $OMT_API_ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"message":"请分析当前项目结构，暂不修改文件"}'
 ```
@@ -98,7 +97,6 @@ session_id 直接对应检查点 thread_id；run_id 只用于本次请求关联�
 
 | HTTP 状态 | code | 含义 |
 | --- | --- | --- |
-| 401 | unauthorized | 缺失或错误 Bearer 令牌 |
 | 404 | session_not_found | 不存在，或属于另一个工作目录 |
 | 409 | session_busy | 同会话正在运行或读取历史 |
 | 409 | session_incomplete | 已有未完成检查点，或本进程观察到失败/取消，不能直接追加输入 |
@@ -120,6 +118,6 @@ session_id 直接对应检查点 thread_id；run_id 只用于本次请求关联�
 
 ## 安全范围与后续工作
 
-这是具有当前用户文件和进程权限的执行入口，只适合可信本机调用方。固定目录不是文件沙箱，路径解析也不会限制模型读取目录外文件。不要直接暴露公网；多用户、工具审批、进程/文件隔离、速率和请求体资源限制需单独实现。
+这是具有当前用户文件和进程权限的执行入口，只适合可信本机调用方。当前没有访问令牌保护，任何能访问接口的调用方均可能读取会话或触发工具；后端及前端代理都不要向不可信网络开放。固定目录不是文件沙箱，路径解析也不会限制模型读取目录外文件。不要直接暴露公网；多用户、工具审批、进程/文件隔离、速率和请求体资源限制需单独实现。
 
 SSE、持久化运行状态、取消、断线重连与多用户均未实现。相关离线验证及限制见 [HTTP 测试说明](tests/api.md)。

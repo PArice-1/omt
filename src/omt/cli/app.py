@@ -8,17 +8,17 @@ from contextlib import AbstractAsyncContextManager
 
 from prompt_toolkit import PromptSession
 
-from omt.core.bootstrap import open_session_manager
+from omt.core.bootstrap import SessionRuntime, open_session_runtime
 from omt.core.session_manager import SessionError, SessionManager
 
-from .commands import CliState, handle_command
+from .commands import CliState, handle_command, handle_thinking_command
 from .settings import CliSettings
-from .terminal import print_event, print_warnings, read_input
+from .terminal import display_thinking, print_event, print_warnings, read_input
 
 
-# 默认工厂使用与 HTTP 相同的资源生命周期；保留可注入 seam 供离线测试使用。
-open_manager = open_session_manager
-ManagerFactory = Callable[[CliSettings], AbstractAsyncContextManager[SessionManager]]
+# 默认工厂持有可切换的生命周期；兼容嵌入方直接提供固定 Manager。
+open_manager = open_session_runtime
+ManagerFactory = Callable[[CliSettings], AbstractAsyncContextManager[SessionRuntime | SessionManager]]
 
 
 async def run_cli(
@@ -27,22 +27,29 @@ async def run_cli(
 ) -> None:
     """在调用方的事件循环中运行交互；不读取 HTTP 令牌、不创建网络服务器。
 
-    manager_factory 在整个输入循环期间持有 Manager，退出时负责关闭；默认
-    共用 bootstrap。terminal 可注入内存终端，默认创建一个 PromptSession。
+    manager_factory 在整个输入循环期间持有 SessionRuntime 或固定 Manager，退出时
+    负责关闭；默认 runtime 支持 /thinking 切换。固定 Manager 不读取额外模型配置，
+    也不支持切换。terminal 可注入内存终端，默认创建一个 PromptSession。
     Ctrl-C/外部取消向外传播，由 main 或宿主负责处理；直接退出不登记空会话。
     """
     options = options or CliSettings()
     factory = manager_factory or open_manager
-    async with factory(options) as manager:
+    async with factory(options) as active:
+        runtime = active if isinstance(active, SessionRuntime) else None
         terminal = terminal if terminal is not None else PromptSession()
         state = CliState()
-        print("输入 /resume（或 resume）查看会话，/exit 或 /quit 退出，Ctrl-C 或 Ctrl-D 结束会话。")
+        print("输入 /resume 查看会话，/thinking 查看或修改推理强度，/exit 或 /quit 退出，Ctrl-C 或 Ctrl-D 结束会话。")
+        if runtime is not None:
+            display_thinking(runtime.thinking)
         while True:
             try:
                 text = await read_input(terminal)
             except EOFError:
                 print("\n会话结束。")
                 return
+            if await handle_thinking_command(text, runtime=runtime):
+                continue
+            manager = active.manager if isinstance(active, SessionRuntime) else active
             action = await handle_command(text, manager=manager, state=state)
             if action == "exit":
                 print("会话结束。")

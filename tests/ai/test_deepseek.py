@@ -40,12 +40,52 @@ def test_valid_parameters_return_usable_model(
     assert result.invoke("测试输入").content == "这是本地测试回复"
     chat_model_factory.assert_called_once_with(
         model_provider="deepseek",
+        configurable_fields=None,
+        config_prefix=None,
         model="deepseek-chat",
         base_url=url,
         api_key=SecretStr(key),
         temperature=0,
         max_tokens=128,
     )
+
+
+@pytest.mark.parametrize("effort", ["high", "max"])
+def test_reasoning_effort_enables_thinking_and_preserves_options(
+    effort: str, chat_model_factory: Mock, chat_model: FakeListChatModel,
+) -> None:
+    body: dict[str, object] = {"custom_option": True, "thinking": {"type": "disabled"}}
+    result = deepseek_init(
+        "deepseek", model="deepseek-chat", base_url=HttpUrl("https://example.test/v1"),
+        api_key=SecretStr("test-key"), reasoning_effort=effort,
+        extra_body=body, max_tokens=128,
+    )
+
+    assert result is chat_model
+    assert result.invoke("本地输入").content == "这是本地测试回复"
+    options = chat_model_factory.call_args.kwargs
+    assert options["reasoning_effort"] == effort
+    assert options["extra_body"] == {"custom_option": True, "thinking": {"type": "enabled"}}
+    assert options["max_tokens"] == 128
+    assert body == {"custom_option": True, "thinking": {"type": "disabled"}}
+
+
+@pytest.mark.parametrize("effort", [None, "none"])
+@pytest.mark.parametrize("body", [None, {"custom_option": True}])
+def test_no_reasoning_effort_does_not_configure_thinking(
+    effort: str | None, body: dict[str, object] | None, chat_model_factory: Mock,
+) -> None:
+    deepseek_init(
+        "deepseek", model="deepseek-chat", base_url=HttpUrl("https://example.test/v1"),
+        api_key=SecretStr("test-key"), reasoning_effort=effort, extra_body=body,
+    )
+
+    options = chat_model_factory.call_args.kwargs
+    assert "reasoning_effort" not in options
+    if body is None:
+        assert "extra_body" not in options
+    else:
+        assert options["extra_body"] == body
 
 
 @pytest.mark.parametrize("key", ["", " ", "\n\t"])

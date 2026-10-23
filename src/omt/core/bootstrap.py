@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from langchain_core.tools import BaseTool
@@ -17,14 +18,20 @@ from . import settings as settings_module
 from .configuration import SessionSettings
 from .mcp import get_tools
 from .prompts import load_system_prompt
-from .session_manager import SessionManager
-from .settings import Settings, load_auth, load_model_store
+from .session_manager import SessionError, SessionManager
+from .settings import ModelDefinition, Settings, load_auth, load_model_store
 from .store import SessionStore
 from .tools_manager import load_tools
 
 
-def build_model(settings: Settings) -> Model:
-    """精确解析提供商、认证和模型目录，不回退到其他模型或环境密钥。"""
+def build_model(settings: Settings, *, definition: ModelDefinition | None = None) -> Model:
+    """解析连接及可选思考等级；未配置或没有有效映射时按 "none" 处理。
+
+    settings 中显式的非 none 等级按所选模型的 thinkingLevelMap 映射后传给提供商。
+    未配置、null、字符串 "none"、映射缺失或对应值为 null 时不主动配置思考。
+    模型选择与认证仍严格校验，不回退到其他模型或环境密钥。
+    definition 可传入已解析的目录快照，以保证展示和初始化使用同一映射；其 ID/provider 必须匹配设置。
+    """
     provider = settings.defaultProvider
     model_id = settings.defaultModel
     if provider not in model_initializers:
@@ -42,19 +49,15 @@ def build_model(settings: Settings) -> Model:
     if api_key is None or not api_key.get_secret_value().strip():
         raise ValueError(f"auth.json 中提供商 {provider!r} 的 API Key 不能为空")
 
-    provider_models = load_model_store().get(provider)
-    if provider_models is None:
-        raise ValueError(f"model-store.json 中缺少提供商 {provider!r}")
-    definition = next((model for model in provider_models.models if model.id == model_id), None)
-    if definition is None:
-        raise ValueError(
-            f"model-store.json 中未找到提供商 {provider!r} 的模型 {model_id!r}；"
-            "settings.json 的 defaultModel 必须与 models[].id 完全一致"
-        )
-    if definition.provider is not None and definition.provider != provider:
-        raise ValueError(f"model-store.json 中模型 {model_id!r} 的提供商与配置不一致")
+    definition = definition if definition is not None else _load_model_definition(settings)
+    if definition.id != model_id or (definition.provider is not None and definition.provider != provider):
+        raise ValueError(f"model-store.json 中模型 {model_id!r} 的模型标识或提供商与配置不一致")
+    effort = _thinking_status(settings, definition).reasoning_effort
 
-    return Model(provider, model=definition.id, base_url=definition.baseUrl, api_key=api_key)
+    return Model(
+        provider, model=definition.id, base_url=definition.baseUrl,
+        api_key=api_key, reasoning_effort=effort,
+    )
 
 
 async def build_agent(
@@ -73,13 +76,104 @@ async def build_agent(
     )
 
 
-@asynccontextmanager
-async def open_session_manager(options: SessionSettings) -> AsyncGenerator[SessionManager]:
-    """为一个 CLI/API 生命周期组装 Manager，并先清理任务再关闭检查点连接。
+@dataclass(frozen=True)
+class ThinkingStatus:
+    """不含凭据的当前模型状态；level 是请求等级，reasoning_effort 是实际映射结果。"""
 
-    options 的目录必须等于进程 cwd；数据库及 sessions 表必须预建。
-    本函数不切换目录、不要求 HTTP 令牌，也不创建终端或监听网络端口。
+    provider: str
+    model: str
+    level: str
+    reasoning_effort: str
+    available_levels: tuple[str, ...]
+
+
+def _load_model_definition(settings: Settings) -> ModelDefinition:
+    provider_models = load_model_store().get(settings.defaultProvider)
+    if provider_models is None:
+        raise ValueError(f"model-store.json 中缺少提供商 {settings.defaultProvider!r}")
+    definition = next((model for model in provider_models.models if model.id == settings.defaultModel), None)
+    if definition is None:
+        raise ValueError(
+            f"model-store.json 中未找到模型 {settings.defaultModel!r}；"
+            + "settings.json 的 defaultModel 必须与 models[].id 完全一致"
+        )
+    return definition
+
+
+def _thinking_status(settings: Settings, definition: ModelDefinition) -> ThinkingStatus:
+    mapping = definition.thinkingLevelMap or {}
+    level = settings.defaultThinkingLevel or "none"
+    effort = (mapping.get(level) or "none") if level != "none" else "none"
+    levels = tuple(sorted(key for key, value in mapping.items() if key != "none" and value is not None))
+    return ThinkingStatus(settings.defaultProvider, settings.defaultModel, level, effort, ("none", *levels))
+
+
+class SessionRuntime:
+    """拥有当前 Manager 的应用生命周期；切换只影响本实例，不改写配置文件。
+
+    由 open_session_runtime 创建，固定目录快照、工具和 Checkpointer；只有
+    set_thinking_level 成功后才替换 manager。调用者每次操作读取最新 manager，
+    不应长期缓存旧实例。关闭资源由外层异步上下文负责。
     """
+
+    def __init__(
+        self, manager: SessionManager, settings: Settings, definition: ModelDefinition,
+        saver: AsyncSqliteSaver, mcp_tools: Sequence[BaseTool],
+    ) -> None:
+        """settings/definition 是启动快照，saver 在本实例整个生命周期保持打开。
+
+        mcp_tools 是已发现的 MCP 工具，切换时复用，不重复连接外部服务器。
+        """
+        self._manager: SessionManager = manager
+        self._settings: Settings = settings.model_copy(deep=True)
+        self._definition: ModelDefinition = definition.model_copy(deep=True)
+        self._saver: AsyncSqliteSaver = saver
+        self._mcp_tools: tuple[BaseTool, ...] = tuple(mcp_tools)
+        self._closed: bool = False
+        self._changing: bool = False
+
+    @property
+    def manager(self) -> SessionManager:
+        return self._manager
+
+    @property
+    def thinking(self) -> ThinkingStatus:
+        return _thinking_status(self._settings, self._definition)
+
+    async def set_thinking_level(self, level: str) -> None:
+        """从下一轮使用新等级；缺失映射按 none，构建失败保留旧模型和状态。
+
+        level 是目录中的等级名或 none，必须非空。切换会重新创建 Model、Agent、
+        Manager，但复用历史和失败保护；不调用模型试运行，不重写设置缓存或文件。
+        并行切换立即拒绝；有运行/历史操作时交接也会被 Manager 拒绝。
+        """
+        if self._closed:
+            raise SessionError("manager_closed", "服务正在关闭")
+        if self._changing:
+            raise SessionError("manager_busy", "正在切换推理强度")
+        candidate = Settings.model_validate({**self._settings.model_dump(), "defaultThinkingLevel": level})
+        if (candidate.defaultThinkingLevel or "none") == self.thinking.level:
+            return
+        self._changing = True
+        try:
+            model = build_model(candidate, definition=self._definition)
+            agent = await build_agent(model, checkpointer=self._saver, extra_tools=self._mcp_tools)
+            if self._closed:
+                raise SessionError("manager_closed", "服务正在关闭")
+            successor = await self._manager.rebuild(agent)
+            self._manager = successor
+            self._settings = candidate
+        finally:
+            self._changing = False
+
+    async def aclose(self) -> None:
+        """先关闭当前 Manager；外层再关闭共享的 SQLite Saver。"""
+        self._closed = True
+        await self._manager.aclose()
+
+
+async def _prepare_session(options: SessionSettings) -> tuple[SessionStore, str, list[Path]]:
+    """先检查工作目录和预建索引，再读取提示词；不触碰模型认证。"""
     if options.workspace_path != Path.cwd().resolve() or not options.workspace_path.is_dir():
         raise ValueError("工作目录必须与启动进程的当前目录一致，请先切换目录再启动")
     if not options.db_path.is_file():
@@ -87,10 +181,43 @@ async def open_session_manager(options: SessionSettings) -> AsyncGenerator[Sessi
     store = SessionStore(options.db_path)
     _ = await store.list_sessions(options.workspace_path)
     system_prompt = load_system_prompt()
-    model = build_model(settings_module.load_settings())
     roots = options.skill_roots
     if roots is None:
         roots = [settings_module.root / "agent" / "skills", options.workspace_path / "skills"]
+    return store, system_prompt, list(roots)
+
+
+@asynccontextmanager
+async def open_session_runtime(options: SessionSettings) -> AsyncGenerator[SessionRuntime]:
+    """为可切换模型的入口持有一个 Saver；切换重建 Manager，不重建数据库连接。"""
+    store, prompt, roots = await _prepare_session(options)
+    settings = settings_module.load_settings().model_copy(deep=True)
+    definition = _load_model_definition(settings)
+    model = build_model(settings, definition=definition)
+    servers = {name: server.connection() for name, server in options.mcp_servers.items()}
+    mcp_tools = await get_tools(servers) if servers else []
+    async with AsyncSqliteSaver.from_conn_string(str(options.db_path)) as saver:
+        agent = await build_agent(model, checkpointer=saver, extra_tools=mcp_tools)
+        manager = SessionManager(
+            agent, store, workspace_path=options.workspace_path, system_prompt=prompt,
+            skill_roots=roots, max_concurrent_runs=options.max_concurrent_runs,
+        )
+        runtime = SessionRuntime(manager, settings, definition, saver, mcp_tools)
+        try:
+            yield runtime
+        finally:
+            await runtime.aclose()
+
+
+@asynccontextmanager
+async def open_session_manager(options: SessionSettings) -> AsyncGenerator[SessionManager]:
+    """为一个 CLI/API 生命周期组装 Manager，并先清理任务再关闭检查点连接。
+
+    options 的目录必须等于进程 cwd；数据库及 sessions 表必须预建。
+    本函数不切换目录、不要求 HTTP 令牌，也不创建终端或监听网络端口。
+    """
+    store, system_prompt, roots = await _prepare_session(options)
+    model = build_model(settings_module.load_settings())
     async with AsyncSqliteSaver.from_conn_string(str(options.db_path)) as saver:
         agent = await build_agent(
             model, checkpointer=saver,

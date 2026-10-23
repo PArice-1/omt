@@ -26,7 +26,7 @@ def settings_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
     load_settings.cache_clear()
     monkeypatch.chdir(tmp_path)
     for name in list(os.environ):
-        if name.lower() in {"defaultprovider", "defaultmodel"}:
+        if name.lower() in {"defaultprovider", "defaultmodel", "defaultthinkinglevel"}:
             monkeypatch.delenv(name)
     directory = tmp_path / "agent"
     directory.mkdir()
@@ -41,6 +41,26 @@ def test_settings_accept_valid_values(settings_file: Path):
 
     assert settings.defaultProvider == "deepseek"
     assert settings.defaultModel == "deepseek-chat"
+    assert settings.defaultThinkingLevel is None
+
+
+@pytest.mark.parametrize("level", [None, "media", "high", "none", "custom"])
+def test_load_settings_reads_thinking_level(settings_file: Path, level: str | None) -> None:
+    _ = settings_file.write_text(json.dumps({
+        "defaultProvider": "deepseek", "defaultModel": "deepseek-chat",
+        "defaultThinkingLevel": level,
+    }), encoding="utf-8")
+
+    assert load_settings().defaultThinkingLevel == level
+
+
+@pytest.mark.parametrize("level", ["", "   ", 123])
+def test_settings_reject_invalid_thinking_level(settings_file: Path, level: object) -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate({
+            "defaultProvider": "deepseek", "defaultModel": "deepseek-chat",
+            "defaultThinkingLevel": level,
+        })
 
 
 @pytest.mark.parametrize(
@@ -55,10 +75,10 @@ def test_settings_accept_valid_values(settings_file: Path):
     ],
 )
 def test_settings_reject_invalid_values(
-    payload: dict, field: str, settings_file: Path
-):
+    payload: dict[str, object], field: str, settings_file: Path
+) -> None:
     with pytest.raises(ValidationError) as error:
-        Settings(**payload)
+        _ = Settings.model_validate(payload)
 
     assert error.value.errors()[0]["loc"] == (field,)
 
@@ -74,6 +94,7 @@ def test_load_settings_reads_configuration(settings_file: Path):
     assert isinstance(settings, Settings)
     assert settings.defaultProvider == "deepseek"
     assert settings.defaultModel == "deepseek-chat"
+    assert settings.defaultThinkingLevel is None
 
 
 def test_missing_settings_file_raises(settings_file: Path):

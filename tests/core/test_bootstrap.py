@@ -8,11 +8,11 @@ from unittest.mock import Mock
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from pydantic import SecretStr
+from pydantic import HttpUrl, SecretStr
 
 from omt.agent.agent import Agent
 from omt.core.bootstrap import build_agent as _get_agent, build_model as _get_model
-from omt.core.settings import Settings, load_settings
+from omt.core.settings import ModelDefinition, Settings, load_settings
 
 
 @pytest.fixture
@@ -20,6 +20,7 @@ def config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("defaultProvider", raising=False)
     monkeypatch.delenv("defaultModel", raising=False)
+    monkeypatch.delenv("defaultThinkingLevel", raising=False)
     load_settings.cache_clear()
     directory = tmp_path / "agent"
     directory.mkdir()
@@ -32,6 +33,7 @@ def config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (directory / "model-store.json").write_text(json.dumps({
         "deepseek": {"models": [{
             "id": "deepseek-chat", "provider": "deepseek", "baseUrl": "https://example.test/v1",
+            "thinkingLevelMap": {"media": "high"},
         }]},
     }), encoding="utf-8")
     yield directory
@@ -52,6 +54,8 @@ def test_get_model_joins_settings_auth_and_matching_catalog_entry(config_dir: Pa
     assert client.model is model_factory.return_value
     model_factory.assert_called_once_with(
         model_provider="deepseek",
+        configurable_fields=None,
+        config_prefix=None,
         model="deepseek-chat",
         base_url="https://example.test/v1",
         api_key=SecretStr("test-only-key"),
@@ -113,13 +117,64 @@ def test_get_model_uses_url_of_exact_selected_model_not_first_entry(config_dir: 
     (config_dir / "model-store.json").write_text(json.dumps({
         "deepseek": {"models": [
             {"id": "other", "baseUrl": "https://wrong.example.test"},
-            {"id": "deepseek-chat", "baseUrl": "https://selected.example.test/v1"},
+            {"id": "deepseek-chat", "baseUrl": "https://selected.example.test/v1",
+             "thinkingLevelMap": {"media": "high"}},
         ]},
     }), encoding="utf-8")
 
     _get_model(load_settings())
 
     assert model_factory.call_args.kwargs["base_url"] == "https://selected.example.test/v1"
+
+
+@pytest.mark.parametrize("level, effort", [("high", "max"), ("none", "high")])
+def test_get_model_maps_selected_thinking_level(
+    config_dir: Path, model_factory: Mock, level: str, effort: str,
+) -> None:
+    _ = (config_dir / "model-store.json").write_text(json.dumps({
+        "deepseek": {"models": [{
+            "id": "deepseek-chat", "baseUrl": "https://example.test/v1",
+            "thinkingLevelMap": {"media": "high", level: effort},
+        }]},
+    }), encoding="utf-8")
+    settings = Settings(defaultProvider="deepseek", defaultModel="deepseek-chat",
+                        defaultThinkingLevel=level)
+
+    client = _get_model(settings)
+
+    assert client.model is model_factory.return_value
+    options = model_factory.call_args.kwargs
+    if level == "none":
+        assert "reasoning_effort" not in options
+        assert "extra_body" not in options
+    else:
+        assert options["reasoning_effort"] == effort
+        assert options["extra_body"] == {"thinking": {"type": "enabled"}}
+
+
+@pytest.mark.parametrize("metadata", [
+    {}, {"thinkingLevelMap": None}, {"thinkingLevelMap": {}},
+    {"thinkingLevelMap": {"high": "high"}}, {"thinkingLevelMap": {"media": None}},
+])
+@pytest.mark.parametrize("level", [None, "media", "none"])
+def test_get_model_uses_none_when_thinking_is_unconfigured_or_unavailable(
+    config_dir: Path, model_factory: Mock, metadata: dict[str, object], level: str | None,
+) -> None:
+    _ = (config_dir / "model-store.json").write_text(json.dumps({
+        "deepseek": {"models": [{
+            "id": "deepseek-chat", "baseUrl": "https://example.test/v1", **metadata,
+        }]},
+    }), encoding="utf-8")
+
+    settings = Settings(defaultProvider="deepseek", defaultModel="deepseek-chat",
+                        defaultThinkingLevel=level)
+
+    client = _get_model(settings)
+
+    assert client.model is model_factory.return_value
+    options = model_factory.call_args.kwargs
+    assert "reasoning_effort" not in options
+    assert "extra_body" not in options
 
 
 def test_get_model_rejects_unregistered_provider_before_initializing_model(config_dir: Path, model_factory: Mock) -> None:
@@ -142,3 +197,18 @@ def test_get_agent_uses_underlying_chat_model_and_builtin_tools(
     assert agent.model is client.model
     assert agent.tools is not None
     assert {getattr(item, "name", None) for item in agent.tools} == {"read", "edit", "write", "bash"}
+
+
+@pytest.mark.parametrize("model_id, provider", [("wrong-model", "deepseek"), ("deepseek-chat", "wrong-provider")])
+def test_get_model_rejects_mismatched_definition_snapshot(
+    config_dir: Path, model_factory: Mock, model_id: str, provider: str,
+) -> None:
+    definition = ModelDefinition(
+        id=model_id, provider=provider, baseUrl=HttpUrl("https://example.test/v1"),
+        thinkingLevelMap={"high": "high"},
+    )
+
+    with pytest.raises(ValueError, match="与配置不一致"):
+        _ = _get_model(load_settings(), definition=definition)
+
+    model_factory.assert_not_called()

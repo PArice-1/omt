@@ -7,11 +7,12 @@ CLI 与非流式 FastAPI 是平级的应用入口，共用 SessionManager、依�
 ```text
 omt / python -m omt.cli               omt-api
   → cli.app.run_cli                    → api.app lifespan + routes
-     输入、命令、当前选择、终端输出          鉴权、请求校验、JSON 投影
+     输入、命令、当前选择、终端输出          请求校验、JSON 投影（当前免认证）
                \                       /
-                bootstrap.open_session_manager
-                  → 固定配置、模型、工具/MCP、Store、AsyncSqliteSaver
-                  → SessionManager
+       bootstrap.open_session_runtime        bootstrap.open_session_manager
+         → SessionRuntime（可切换模型）          → 固定模型
+                  → 工具/MCP、Store、AsyncSqliteSaver
+                  → 当前 SessionManager
                      ├─ SessionStore：索引与目录归属
                      ├─ Checkpointer：每次读取最新历史
                      └─ Conversation：一轮执行、完整终态校验、结构化事件
@@ -27,8 +28,8 @@ core 是与入口无关的共用核心，不限定于编码场景。核心不导
 | [cli/app.py](../src/omt/cli/app.py) | 交互生命周期、延迟创建首个会话、调用 Manager | 检查点加载、并发和失败保护 |
 | [cli/commands.py](../src/omt/cli/commands.py) | /resume、退出、编号映射和当前选择 | 模型执行、直接读写 Store |
 | [cli/terminal.py](../src/omt/cli/terminal.py) | 同步/异步输入校验、事件和历史渲染、警告 | 保存历史、HTTP 响应 |
-| [api/](../src/omt/api/) | lifespan、Bearer 校验、请求/响应和稳定错误 | CLI 命令、会话内部编排 |
-| [core/bootstrap.py](../src/omt/core/bootstrap.py) | 读取提示词和模型配置、工具/MCP、Store/Saver/Manager 的共用生命周期 | 输入循环、HTTP 传输 |
+| [api/](../src/omt/api/) | lifespan、请求/响应和稳定错误；当前暂未启用 Bearer 校验 | CLI 命令、会话内部编排 |
+| [core/bootstrap.py](../src/omt/core/bootstrap.py) | 提示词/模型配置和依赖组装；SessionRuntime 持有当前 Manager 并协调推理强度重建 | 输入循环、HTTP 传输 |
 | [core/configuration.py](../src/omt/core/configuration.py) | 共用会话选项、类型化 MCP 连接配置；入口各自继承并指定前缀 | HTTP 令牌、读取模型认证 |
 | [core/session_manager.py](../src/omt/core/session_manager.py) | 按 ID 操作、目录归属、最新历史、互斥/容量、失败和关闭清理 | 跨进程锁、回滚、全局当前会话 |
 | [core/conversation.py](../src/omt/core/conversation.py) | 初始提示词/Skills、一轮同步/异步执行、历史加载和终态校验、过程事件 | 索引、模型配置、终端显示 |
@@ -51,15 +52,19 @@ uv run python -m omt.cli
 uv run omt-api
 ```
 
-omt 指向 omt.cli.app:main。main() 仅在最外层调用一次 asyncio.run(run_cli())；已有事件循环应 await run_cli()。omt-api 指向 omt.api.app:main，默认监听 127.0.0.1:8000，单 worker。HTTP 业务需独立的访问令牌，health 公开且不调用模型。
+omt 指向 omt.cli.app:main。main() 仅在最外层调用一次 asyncio.run(run_cli())；已有事件循环应 await run_cli()。omt-api 指向 omt.api.app:main，默认监听 127.0.0.1:8000，单 worker。当前本机分支的 HTTP 业务无需访问令牌，health 公开且不调用模型；Swagger/OpenAPI 文档也已开放。
 
-两者默认通过 bootstrap.open_session_manager(options)：
+HTTP 默认通过 `bootstrap.open_session_manager(options)`；CLI 默认通过 `bootstrap.open_session_runtime(options)`，由 SessionRuntime 持有可替换的 Manager。两者共用配置解析、预建索引校验、提示词、模型与 Agent 组装：
 1. 确认配置工作目录是实际 cwd，且数据库文件和 sessions 表预先存在；不会 chdir、建索引表或迁移。
 2. 读取包内基础提示词，再解析模型设置/认证/目录，组装模型、内置工具和选定的 MCP。
 3. 持有一个 AsyncSqliteSaver，创建 Store 与 Manager。
-4. 退出先 manager.aclose()，取消并等待活跃历史/运行操作，再关闭 Saver 连接。
+4. 退出先关闭当前 Manager，取消并等待活跃历史/运行操作，再关闭 Saver 连接。
 
-SessionSettings 共享 db_path、workspace_path、max_concurrent_runs、skill_roots、mcp_servers。ApiSettings 使用 OMT_API_ 且要求访问令牌；CliSettings 使用 OMT_CLI_，不要求也不读取 HTTP 令牌。两者默认数据库均为 ~/.omt/agent/state/omt.sqlite。当前 CliSettings 和 ApiSettings 均显式将 skill_roots 默认为 ~/.agents/skills；只有使用共用 SessionSettings 且保留 skill_roots=None 时，bootstrap 才回退到 ~/.omt/agent/skills 与 cwd/skills。CLI 为兼容保留既有 knowledge stdio 本机配置，可用 OMT_CLI_MCP_SERVERS={} 禁用或替换；API 默认 MCP 为空，不继承 CLI 的本机路径。模型的三份 JSON 配置仍由 settings.py 读取，与这些启动选项不同。
+CLI 的 SessionRuntime 提供只读 `manager`/`thinking` 和异步 `set_thinking_level(level)`。修改时按启动目录快照解析新等级，重新初始化 Model、创建 Agent，再调用旧 Manager.rebuild(agent) 创建继任 Manager；只在全部成功后发布新 Manager 和新状态。构建失败/取消保持旧实例及状态；不请求模型试运行，不写回设置或修改缓存。MCP 工具复用启动发现结果，不重复发现；整个生命周期复用同一个 Saver。HTTP 仍使用固定 Manager，不暴露推理强度修改端点。
+
+`run_cli(manager_factory=...)` 可继续注入固定 Manager，此时不读取额外模型配置，不支持切换；也可注入提供 SessionRuntime 的异步工厂。调用方应每次通过 runtime.manager 取得最新实例，不再使用切换前的引用。
+
+SessionSettings 共享 db_path、workspace_path、max_concurrent_runs、skill_roots、mcp_servers。ApiSettings 使用 OMT_API_，当前访问令牌字段可不配置且不校验长度，路由也不执行鉴权；配置令牌不会自动恢复认证。CliSettings 使用 OMT_CLI_，不要求也不读取 HTTP 令牌。两者默认数据库均为 ~/.omt/agent/state/omt.sqlite。当前 CliSettings 和 ApiSettings 均显式将 skill_roots 默认为 ~/.agents/skills；只有使用共用 SessionSettings 且保留 skill_roots=None 时，bootstrap 才回退到 ~/.omt/agent/skills 与 cwd/skills。CLI 为兼容保留既有 knowledge stdio 本机配置，可用 OMT_CLI_MCP_SERVERS={} 禁用或替换；API 默认 MCP 为空，不继承 CLI 的本机路径。模型的三份 JSON 配置仍由 settings.py 读取，与这些启动选项不同。
 
 ### CLI 交互
 
@@ -68,6 +73,7 @@ SessionSettings 共享 db_path、workspace_path、max_concurrent_runs、skill_ro
 - 首条普通请求才调用 Manager.create_session，以原文前 10 字符为标题。仅看列表、退出或输入 Ctrl-C 不登记空会话。登记失败不执行模型，下一次输入可重试；首轮开始后即使失败/取消也保留索引。
 - /resume 调用 Manager.list_sessions，只显示当前工作目录的记录。0 固定为当前选择；尚未登记时显示“新对话”和启动 UTC 时间。其他编号沿用 Store 修改时间排序，标题折为单行。
 - /resume N 只使用最近展示的编号映射，调用 Manager.open_session 复查归属、加载历史并刷新修改时间。成功后才替换 CLI 当前选择、展示历史与警告，并清空旧编号；失败保持旧选择，删除/移出目录的记录使旧映射失效。
+- 启动和 /thinking 展示请求等级、实际 effort 与目录支持的可选等级（始终包含 none）；/thinking <level> 修改当前进程后续轮次使用的强度。缺失/null 映射按 none 并提示，不把请求等级误当成实际 effort。命令不登记会话；重建不丢失当前选择、编号和历史，不绕过失败保护。
 - 普通请求调用 Manager.run(..., event_handler=terminal.print_event)。最终回答已通过事件输出，入口不再次打印 answer；成功轮次由 Manager 刷新 updated_at。
 - 模型/工具失败后允许输入其他命令，但同一会话会被 Manager 标为需恢复，不能盲目重跑；可选择其他会话或退出检查。不再沿用旧 CLI 的失败后直接追加策略。
 - Ctrl-C 在输入与执行阶段均退出整个 CLI。执行时沿用 asyncio.run 默认 SIGINT 取消，Conversation 清理消费任务和流，Manager 先于 Saver 关闭。main 只捕获 KeyboardInterrupt；外部任务取消向上传播，不伪装成正常退出。同步工具线程、外部进程和已经发生的副作用不保证立即停止或撤销。
@@ -78,7 +84,7 @@ CLI 配置和示例见[使用说明](cli.md)，交互证据见[CLI 测试](tests
 
 load_system_prompt() 使用 importlib.resources 读取包内 prompts/system.md，与 cwd 无关；资源缺失、非 UTF-8 或纯空白在模型初始化前失败。bootstrap 每次生命周期读取一次，Manager 只在空会话首轮传入 Conversation，与 Skills 目录合并成单条 SystemMessage；不要同时传给 Agent.system_prompt。恢复已有消息不替换原系统规则，也不重新扫描 Skills。
 
-HTTP 显式创建即登记，允许空会话；历史响应只投影用户/助手/工具文本和工具关联，不暴露系统提示词、artifact、模型元数据或检查点。其 JSON 调用默认不绑定过程回调。完整路由、鉴权和错误见[HTTP 使用说明](api.md)。
+HTTP 显式创建即登记，允许空会话；历史响应只投影用户/助手/工具文本和工具关联，不暴露系统提示词、artifact、模型元数据或检查点。其 JSON 调用默认不绑定过程回调。当前 HTTP 免认证，仅适合可信本机使用；后端及前端代理均不应向不可信网络开放。完整路由、认证现状和错误见[HTTP 使用说明](api.md)。
 
 ## 3. 模型连接与配置
 
@@ -94,10 +100,10 @@ HTTP 显式创建即登记，允许空会话；历史响应只投影用户/助�
 
 仓库内同名的 `agent/` 文件不是当前默认配置来源。切换工作目录或在导入后修改 HOME，不会自动重定位已计算的 `settings.root`。
 
-- `load_settings()` 读取 `defaultProvider`、`defaultModel`，拒绝空白选择，并缓存成功结果；主动重载用 `cache_clear()`。
+- `load_settings()` 读取 `defaultProvider`、`defaultModel` 和 `defaultThinkingLevel`，拒绝空白选择，并缓存成功结果；主动重载用 `cache_clear()`。`defaultThinkingLevel` 未配置或为 `null` 时按 `"none"` 处理，不再预设 `media` 等思考等级；显式非空等级名由模型目录映射。
 - `load_auth()` 不缓存；按 provider 保存认证类型及可选的 `SecretStr` Key。加载错误不回显文件原文。
-- `load_model_store()` 不缓存；读取 provider 下的 `models`，使用 `id`、`baseUrl`、可选 `provider`，校验 HTTP(S) URL 和 ID 唯一性。
-- 文件采用严格 JSON，不接受尾随逗号。能力、价格等额外目录字段目前不驱动初始化逻辑。
+- `load_model_store()` 不缓存；读取 provider 下的 `models`，使用 `id`、`baseUrl`、可选 `provider` 和 `thinkingLevelMap`，校验 HTTP(S) URL 和 ID 唯一性。`thinkingLevelMap` 是等级名到提供商 effort 字符串或 `null` 的映射，非 null 值必须非空；未选模型的缺失映射或 null 等级不影响目录加载。
+- 文件采用严格 JSON，不接受尾随逗号。除思考映射外，能力、价格等额外目录字段目前不驱动初始化逻辑。配置文件名沿用 `model-store.json`，不是 `model-stores.json`。
 
 ### 解析与初始化
 
@@ -108,9 +114,36 @@ HTTP 显式创建即登记，允许空会话；历史响应只投影用户/助�
 3. 默认模型与该 provider 的 `models[].id` 精确匹配，不猜别名、不取列表第一项。
 4. 模型定义若声明 provider，必须与所选 provider 一致。
 
-满足条件后，将 provider、模型 ID、HttpUrl 和 SecretStr 传给 `Model`。当前入口没有缺失凭据时的环境变量回退，也没有 OAuth 或令牌刷新适配。
+思考能力不作为初始化的必备条件：未配置等级、等级为 `null`/`"none"`、模型的 `thinkingLevelMap` 缺失或为 `null`、等级不存在或对应值为 `null` 时，统一使用 `reasoning_effort="none"`，不报缺失映射错误。只有显式选择且存在有效映射的等级才使用映射值；显式 `"none"` 不会被目录重新映射为开启思考。
 
-`Model` 构造时立即调用 `_init_model()`，经注册表进入 `deepseek_init()`，最终使用 LangChain SDK 创建聊天模型。传给 `Agent` 的是 **`client.model`**，不是 Model 包装对象本身。
+满足条件后，将 provider、模型 ID、HttpUrl、SecretStr 和映射后的 `reasoning_effort` 通过 `Model` 的 `**kwargs` 传给提供商。`build_model(settings, definition=...)` 可显式复用已解析目录快照，并校验其 ID/provider，保证 SessionRuntime 的展示与初始化使用同一映射。参数统一拼写为 `reasoning_effort`。当前入口没有缺失凭据时的环境变量回退，也没有 OAuth 或令牌刷新适配。
+
+配置示例（只展示相关字段，目录中仍需设置可信的 `baseUrl`）：
+
+```json
+{
+  "defaultProvider": "deepseek",
+  "defaultModel": "your-model-id",
+  "defaultThinkingLevel": "high"
+}
+```
+
+所选 `models[]` 项的映射示例；实际 effort 应按所用模型的提供商协议配置，不将等级名直接当成 SDK 参数：
+
+```json
+{
+  "high": "high",
+  "max": "max",
+  "none": "none",
+  "unsupported": null
+}
+```
+
+该对象放在模型项的 `thinkingLevelMap` 字段中。不要求旧目录补齐映射；省略 `defaultThinkingLevel` 不主动开启思考。缺失能力按 none 处理，但错误 JSON、错误字段类型、空白等级/映射值及连接或认证错误仍报错。
+
+`Model` 构造时立即调用 `_init_model()`，经注册表进入 `deepseek_init()`，最终使用 LangChain SDK 创建可直接调用的聊天模型，而非可配置模型包装器。传给 `Agent` 的是 **`client.model`**，不是 Model 包装对象本身。
+
+DeepSeek 适配将有效 `reasoning_effort` 原样传给 SDK，并合并 `extra_body={"thinking": {"type": "enabled"}}`。未传 effort、Python `None` 或字符串 `"none"` 时不主动设置思考，也不向 SDK 传 effort；这不保证关闭提供商默认思考模式。已有 `extra_body` 的其他字段及 temperature/max_tokens 等选项保留，启用时覆盖其中的 thinking 配置，不修改调用者字典。规则参考 [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)；离线测试不证明真实服务接受某个 effort。
 
 `baseUrl` 是凭据将被发送到的目标地址，应只使用可信地址。测试不通过读取真实配置验证连接。
 
@@ -137,7 +170,9 @@ SessionManager(agent, store, *, workspace_path, system_prompt, skill_roots, max_
 
 get_history 只读取、不刷新修改时间。open_session 返回 LoadedSession(record, messages, warnings)，校验成功后刷新时间；原始消息由 CLI 决定如何显示，Manager 不改变当前选择。run 返回 RunResult(session_id, run_id, answer, warnings)，run_id 不是可查询后台任务。event_handler 只影响本轮，默认 None。
 
-运行失败/取消将 ID 加入 _tainted，后续读取/激活/运行均拒绝；重启后根据磁盘检查点判断，不等于失败回滚。模型、工具或终态错误转换为稳定 SessionError；仅最后更新时间失败仍返回成功，附 session_timestamp_update_failed，避免用户因元数据写入失败重跑有副作用的工具。aclose 拒绝新操作并取消/等待活跃历史与运行任务；调用方再关闭 Saver。
+`await manager.rebuild(agent)` 只在没有运行/历史/激活操作时允许交接，要求新 Agent 复用同一个 Checkpointer；创建新的 Manager，保留 Store、目录、提示词、Skills、容量及 `_tainted`，成功后关闭旧 Manager。历史不手动复制，下一轮仍从检查点读取；不登记或激活会话，不刷新索引时间。忙碌时立即拒绝，不取消现有请求。失败集合的交接封装在 Manager 内部，入口和 runtime 不访问其私有字段。
+
+运行失败/取消将 ID 加入 _tainted，后续读取/激活/运行均拒绝；模型重建仍保留此保护，进程重启后根据磁盘检查点判断，不等于失败回滚。模型、工具或终态错误转换为稳定 SessionError；仅最后更新时间失败仍返回成功，附 session_timestamp_update_failed，避免用户因元数据写入失败重跑有副作用的工具。aclose 拒绝新操作并取消/等待活跃历史与运行任务；调用方再关闭 Saver。
 
 ### Conversation 初始化与一轮执行
 

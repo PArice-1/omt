@@ -26,6 +26,10 @@ class Settings(BaseSettings):
 
     defaultProvider: NonEmptyString = Field(description="默认模型提供商")
     defaultModel: NonEmptyString = Field(description="默认模型标识，与模型目录中的 id 一致")
+    defaultThinkingLevel: NonEmptyString | None = Field(
+        default=None,
+        description="可选思考等级；未配置或为 null 时按 none 处理，显式等级按模型 thinkingLevelMap 映射",
+    )
 
 
 class AuthCredential(BaseModel):
@@ -38,11 +42,13 @@ class AuthCredential(BaseModel):
 
 
 class ModelDefinition(BaseModel):
-    """模型连接所需的字段；目录中的能力、价格等额外元数据暂不使用。"""
+    """模型连接与思考映射；其他能力、价格等额外元数据暂不使用。"""
 
     id: NonEmptyString
     baseUrl: HttpUrl
     provider: NonEmptyString | None = None
+    # 等级名映射到提供商的 reasoning_effort；映射缺失、等级缺失或值为 null 时按 none 处理。
+    thinkingLevelMap: dict[str, NonEmptyString | None] | None = None
 
 
 class ProviderModels(BaseModel):
@@ -93,5 +99,5 @@ def load_model_store() -> dict[str, ProviderModels]:
         return _MODEL_STORE_ADAPTER.validate_json(content)
     except ValidationError:
         raise ValueError(
-            f"模型目录 {path} 格式无效，请检查 JSON、models 列表、唯一 id 和 baseUrl 地址"
+            f"模型目录 {path} 格式无效，请检查 JSON、models 列表、唯一 id、baseUrl 地址和 thinkingLevelMap"
         ) from None

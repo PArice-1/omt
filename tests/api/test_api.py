@@ -84,7 +84,7 @@ def database(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def options(database: Path, tmp_path: Path) -> ApiSettings:
-    return ApiSettings(access_token=SecretStr(TOKEN), db_path=database, workspace_path=tmp_path, skill_roots=[])
+    return ApiSettings(db_path=database, workspace_path=tmp_path, skill_roots=[])
 
 
 def application(options: ApiSettings, model: LocalModel, tools: Sequence[BaseTool] = ()) -> FastAPI:
@@ -109,25 +109,53 @@ def new_session(client: TestClient) -> str:
     return response.json()["session_id"]
 
 
-def test_http_auth_validation_and_health(options: ApiSettings) -> None:
-    app = application(options, LocalModel(responses=[AIMessage(content="未调用")]))
+@pytest.mark.parametrize("token", ["", TOKEN])
+@pytest.mark.parametrize("headers", [{}, HEADERS, {"Authorization": "Bearer wrong"}, {"Authorization": "Basic invalid"}])
+def test_http_sessions_do_not_require_bearer(
+    options: ApiSettings, token: str, headers: dict[str, str],
+) -> None:
+    # 即使保留了旧令牌配置，当前路由也不会恢复鉴权；四个业务接口均验证。
+    configured = options.model_copy(update={"access_token": SecretStr(token)})
+    model = LocalModel(responses=[AIMessage(content="免认证回答")])
+    with TestClient(application(configured, model)) as client:
+        response = client.post("/api/v1/sessions", json={}, headers=headers)
+        assert response.status_code == 201
+        session_id = response.json()["session_id"]
+        response = client.get("/api/v1/sessions", headers=headers)
+        assert response.status_code == 200
+        assert [item["session_id"] for item in response.json()] == [session_id]
+        response = client.get(f"/api/v1/sessions/{session_id}/messages", headers=headers)
+        assert response.status_code == 200 and response.json() == []
+        response = client.post(
+            f"/api/v1/sessions/{session_id}/runs", json={"message": "本地请求"}, headers=headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["answer"] == "免认证回答"
+        history = client.get(f"/api/v1/sessions/{session_id}/messages", headers=headers)
+        assert history.status_code == 200
+        assert [item["text"] for item in history.json()] == ["本地请求", "免认证回答"]
+        assert "WWW-Authenticate" not in response.headers
+
+
+@pytest.mark.parametrize("headers", [{}, HEADERS])
+def test_http_input_validation_and_health(options: ApiSettings, headers: dict[str, str]) -> None:
+    model = LocalModel(responses=[AIMessage(content="未调用")])
+    app = application(options, model)
     with TestClient(app) as client:
         assert client.get("/health").json() == {"status": "ok"}
-        for headers in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": "Basic invalid"}):
-            response = client.get("/api/v1/sessions", headers=headers)
-            assert response.status_code == 401
-            assert response.json()["error"]["code"] == "unauthorized"
-        assert client.get("/docs").status_code == 404
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert client.get(path).status_code == 200
         for message in ("", " \n", "a\x00b", "x" * 32001, 42):
             response = client.post(
-                "/api/v1/sessions/missing/runs", json={"message": message}, headers=HEADERS,
+                "/api/v1/sessions/missing/runs", json={"message": message}, headers=headers,
             )
             assert response.status_code == 422
             assert response.json()["error"]["code"] == "invalid_request"
             assert "input" not in response.text
-        response = client.post("/api/v1/sessions", json={"workspace_path": "/arbitrary"}, headers=HEADERS)
+        response = client.post("/api/v1/sessions", json={"workspace_path": "/arbitrary"}, headers=headers)
         assert response.status_code == 422
-        assert client.get("/api/v1/sessions", headers=HEADERS).json() == []
+        assert client.get("/api/v1/sessions", headers=headers).json() == []
+    assert model.seen_messages == []
 
 
 def test_http_multiturn_restart_empty_session_and_history_projection(
@@ -307,13 +335,17 @@ def test_manager_concurrency_cancellation_and_shutdown(options: ApiSettings, lim
     asyncio.run(execute())
 
 
+@pytest.mark.parametrize("token", [None, "", " ", "short-test-token", TOKEN])
+def test_settings_accept_optional_access_token(token: str | None) -> None:
+    configured = ApiSettings() if token is None else ApiSettings(access_token=SecretStr(token))
+    assert configured.access_token.get_secret_value() == (token if token is not None else "")
+    if token is not None and token.strip():
+        assert token not in repr(configured)
+
+
 def test_settings_and_startup_fail_closed(
     options: ApiSettings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with pytest.raises(ValidationError):
-        _ = ApiSettings(access_token=SecretStr(" "))
-    with pytest.raises(ValidationError):
-        _ = ApiSettings()
     monkeypatch.setenv("OMT_API_ACCESS_TOKEN", TOKEN)
     assert ApiSettings().access_token.get_secret_value() == TOKEN
     # 默认组装必须在读取真实配置前拒绝缺库、缺表和错误 cwd。
@@ -383,9 +415,17 @@ def test_mcp_configuration_is_explicit_and_secrets_are_not_rendered(
     assert isinstance(configured.mcp_servers["http"], HttpServerSettings)
     assert "test-only-private-header" not in repr(configured)
     assert TOKEN not in repr(configured)
+    short_token = "short-private-token"
+    short_configured = ApiSettings(access_token=SecretStr(short_token))
+    assert short_configured.access_token.get_secret_value() == short_token
+    assert short_token not in repr(short_configured)
+    # 令牌不再触发校验错误，改用仍非法的运行容量检查异常脱敏。
     with pytest.raises(ValidationError) as raised:
-        _ = ApiSettings(access_token=SecretStr("short-private-token"))
-    assert "short-private-token" not in str(raised.value)
+        _ = ApiSettings(access_token=SecretStr(short_token), max_concurrent_runs=0)
+    assert "max_concurrent_runs" in str(raised.value)
+    assert short_token not in str(raised.value)
+    assert TOKEN not in str(raised.value)
+    assert "test-only-private-header" not in str(raised.value)
 
 
 def test_cli_and_http_share_one_manager_without_leaking_terminal_output(

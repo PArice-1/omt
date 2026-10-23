@@ -34,6 +34,8 @@ def test_registered_provider_returns_usable_model(
     assert result.invoke("测试输入").content == "这是本地测试回复"
     chat_model_factory.assert_called_once_with(
         model_provider="deepseek",
+        configurable_fields=None,
+        config_prefix=None,
         model="deepseek-chat",
         base_url="https://api.deepseek.com/",
         api_key=SecretStr("test-not-a-real-api-key"),

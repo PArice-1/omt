@@ -38,11 +38,13 @@ def config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("defaultProvider", raising=False)
     monkeypatch.delenv("defaultModel", raising=False)
+    monkeypatch.delenv("defaultThinkingLevel", raising=False)
     load_settings.cache_clear()
     directory = agent_settings.root / "agent"
     directory.mkdir(parents=True)
     (directory / "settings.json").write_text(json.dumps({
         "defaultProvider": "deepseek", "defaultModel": "deepseek-chat",
+        "defaultThinkingLevel": "high",
     }), encoding="utf-8")
     (directory / "auth.json").write_text(json.dumps({
         "deepseek": {"type": "api_key", "key": "test-only-key"},
@@ -50,6 +52,7 @@ def config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (directory / "model-store.json").write_text(json.dumps({
         "deepseek": {"models": [{
             "id": "deepseek-chat", "provider": "deepseek", "baseUrl": "https://example.test/v1",
+            "thinkingLevelMap": {"high": "high"},
         }]},
     }), encoding="utf-8")
     yield directory
@@ -125,6 +128,8 @@ def test_cli_runs_manager_and_read_tool_without_network(
     assert output.count("最终总结：这是一份测试说明。") == 1
     assert "test-only-key" not in output
     model_factory.assert_called_once()
+    assert model_factory.call_args.kwargs["reasoning_effort"] == "high"
+    assert model_factory.call_args.kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
     assert len(model.seen_messages) == 3
     system_text = model.seen_messages[0][0].text
     assert system_text.startswith(load_system_prompt())

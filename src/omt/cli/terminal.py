@@ -10,6 +10,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.document import Document
 from prompt_toolkit.validation import ValidationError, Validator
 
+from omt.core.bootstrap import ThinkingStatus
 from omt.core.events import RunEvent
 from omt.core.session_manager import validate_message
 
@@ -91,6 +92,18 @@ def display_history(history: Sequence[AnyMessage]) -> None:
         else:
             label = "用户" if isinstance(message, HumanMessage) else message.type
             print(f"[{label}] {format_output(message)}", flush=True)
+
+
+def display_thinking(status: ThinkingStatus) -> None:
+    """显示请求等级和实际映射值，不把 none 误称为关闭服务端默认思考。"""
+    print(f"模型：{status.provider} / {status.model}")
+    print(f"推理等级：{status.level}")
+    print(f"实际 reasoning_effort：{status.reasoning_effort}")
+    print(f"可选等级：{'、'.join(status.available_levels)}")
+    if status.level != "none" and status.level not in status.available_levels:
+        print("当前模型无有效映射，按 none 处理。")
+    if status.reasoning_effort == "none":
+        print("none 表示不主动设置思考参数，不保证关闭服务端默认思考模式。")
 
 
 def print_warnings(warnings: Sequence[str]) -> None:

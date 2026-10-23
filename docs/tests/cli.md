@@ -4,7 +4,7 @@
 
 源码：[app.py](../../src/omt/cli/app.py)、[terminal.py](../../src/omt/cli/terminal.py)、[settings.py](../../src/omt/cli/settings.py)，共同使用 [SessionManager](../../src/omt/core/session_manager.py) 和 [bootstrap](../../src/omt/core/bootstrap.py)。
 
-测试：[test_app.py](../../tests/cli/test_app.py)、[test_terminal.py](../../tests/cli/test_terminal.py)、[test_lifecycle.py](../../tests/cli/test_lifecycle.py)。命令选择与恢复另见 [/resume 测试](resume.md)；底层模型解析另见[配置与组装测试](session-and-config.md)。
+测试：[test_app.py](../../tests/cli/test_app.py)、[test_terminal.py](../../tests/cli/test_terminal.py)、[test_lifecycle.py](../../tests/cli/test_lifecycle.py)。命令选择与恢复另见 [/resume 测试](resume.md)；推理强度展示/切换、重建与失败保护见[推理强度测试](thinking.md)；底层模型解析另见[配置与组装测试](session-and-config.md)。
 
 防止迁出旧 session/runtime 模块后出现空索引、CLI 绕过 Manager、重复打印、历史丢失，以及取消导致工具/SQLite 资源泄漏。旧 test_session.py 被按职责拆分，不再模拟已删除的 Runtime 工厂或 CLI 私有函数；尽量改用真实 Manager、图和检查点验证结果。
 
@@ -19,7 +19,7 @@
 | 兼容旧 MCP | 未配置 CLI MCP，再显式设为 {} | 未配置时仍提供旧 knowledge stdio；{} 关闭，配置解析本身不连接服务器 | test_cli_preserves_legacy_mcp_default_but_can_disable_it |
 | 临时 Skills 隔离 | 共享 fixture 生效后构造 CliSettings | skill_roots 精确等于 tmp_path/skills，不落回真实用户目录；只解析设置，不扫描文件 | test_cli_fixture_uses_only_temporary_skill_roots |
 | Skills 配置选择 | default 删除 CLI 覆盖；custom 设置相对目录；disabled 设置 []；另设置 API 的无关目录 | 分别得到 ~/.agents/skills、当前临时目录下的 custom-skills、空列表；API 前缀不影响 CLI，默认目录只解析不扫描 | test_cli_skill_roots_use_user_default_or_explicit_configuration |
-| 完整默认组装 | 临时模型 JSON、预建库、文件与 Skill；参数 skills_enabled 分别开启临时目录和显式关闭；假模型真实调用 read 后继续第二轮 | 经过 bootstrap/Manager/Conversation 与真实同步 read；启用时系统消息包含临时 Skill 元数据但无正文，关闭时不含 Skills 目录；回答/工具结果可见、假 Key 不显示；重开数据库后系统消息唯一、两轮与工具结果无重复 | test_cli_runs_manager_and_read_tool_without_network |
+| 完整默认组装 | 临时模型 JSON（显式选择 high 并映射到 high）、预建库、文件与 Skill；参数 skills_enabled 分别开启临时目录和显式关闭；假模型真实调用 read 后继续第二轮 | 经过 bootstrap/Manager/Conversation 与真实同步 read；SDK 替身收到 reasoning_effort=high 及 enabled thinking；启用时系统消息包含临时 Skill 元数据但无正文，关闭时不含 Skills 目录；回答/工具结果可见、假 Key 不显示；重开数据库后系统消息唯一、两轮与工具结果无重复 | test_cli_runs_manager_and_read_tool_without_network |
 | 提示词不可用 | 包资源加载替身抛 FileNotFoundError/ValueError | 原异常传播，模型初始化尚未发生，不静默退化 | test_cli_stops_before_model_when_prompt_loading_fails |
 | 无库或无索引表 | 缺文件/父目录，或已有库删除 sessions 表 | 启动失败，未初始化模型、不创建目录或索引表 | test_cli_invalid_database_fails_before_model_and_does_not_create_schema |
 
@@ -51,7 +51,7 @@ CLI/API 共用 Manager 的补充集成场景在 [test_api.py](../../tests/api/te
 - 默认 Skills 搜索通过 OMT_CLI_SKILL_ROOTS 显式覆盖为 tmp_path/skills。CliSettings 的 ~/.agents/skills 默认值在导入时展开，仅改变 HOME、cwd 或 settings.root 不能隔离，因此不再依赖旧的项目 Skills 自动发现行为。配置默认值专项只解析路径、不启动会话；完整链路分别验证临时目录启用和 [] 禁用，不放宽原有 Skill 元数据、正文隔离和历史断言。
 - 数据库、文件、Skill、三份模型配置和假 Key 均在 tmp_path。所有数据库由测试显式建表，图和 AsyncSqliteSaver 真实运行，不读取用户数据。
 - 默认 PromptSession 用替身避免占用用户终端；输入专项使用真实 PromptSession + pipe + DummyOutput，不需要 TTY。
-- 普通入口测试注入只装本地假模型的 Manager 工厂；完整链路仅替换 SDK 初始化，保留默认 bootstrap 和内置 read，不访问模型/MCP 网络。
+- 普通入口测试注入只装本地假模型的固定 Manager 工厂；完整链路仅替换 SDK 初始化，保留默认 bootstrap.open_session_runtime、当前 Manager 和内置 read，不访问模型/MCP 网络。
 - 等待测试使用 Event、超时及 finally 清理；SIGINT 仅作用于测试创建的子进程，设定临时 cwd、继承隔离后的假配置变量、关闭 stdin 并有超时回收。子进程注入本地工厂，不读取真实认证。
 
 ## 执行

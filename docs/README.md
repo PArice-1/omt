@@ -6,6 +6,7 @@ OMT 当前是一个基于 LangChain/LangGraph 的 Agent 应用，CLI 与本机�
 
 | 要做的事 | 先读 | 再看源码 |
 | --- | --- | --- |
+| 开发 Web 前端、交给 AI 对接接口 | [前端接入 API 文档](frontend-api.md) | [路由](../src/omt/api/routes.py)、[数据结构](../src/omt/api/schemas.py) |
 | 启动或调用 HTTP、调整会话管理 | [HTTP 使用说明](api.md)、[HTTP 测试](tests/api.md)、[架构说明](architecture.md) | [api/](../src/omt/api/)、[session_manager.py](../src/omt/core/session_manager.py) |
 | 启动 CLI，调整交互或命令 | [CLI 使用说明](cli.md)、[CLI 测试](tests/cli.md)、[架构说明](architecture.md) | [cli/](../src/omt/cli/)、[session_manager.py](../src/omt/core/session_manager.py) |
 | 调整认证、配置路径或默认模型 | [架构说明](architecture.md)、[配置与组装测试](tests/session-and-config.md) | [settings.py](../src/omt/core/settings.py)、[bootstrap.py](../src/omt/core/bootstrap.py) |

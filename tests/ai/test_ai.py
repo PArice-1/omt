@@ -37,6 +37,8 @@ def test_constructor_initializes_and_stores_usable_model(
     assert client.model.invoke("测试输入").content == "这是本地测试回复"
     chat_model_factory.assert_called_once_with(
         model_provider="deepseek",
+        configurable_fields=None,
+        config_prefix=None,
         model="deepseek-chat",
         base_url="https://api.deepseek.com/",
         api_key=SecretStr("test-not-a-real-api-key"),
@@ -65,6 +67,8 @@ def test_private_init_model_returns_model_using_explicit_parameters(
     assert result is chat_model
     chat_model_factory.assert_called_once_with(
         model_provider="deepseek",
+        configurable_fields=None,
+        config_prefix=None,
         model="deepseek-reasoner",
         base_url="https://api.deepseek.com/v1",
         api_key=SecretStr("another-test-only-key"),

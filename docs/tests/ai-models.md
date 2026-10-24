@@ -20,7 +20,8 @@
 | 显式初始化参数 | 在构造后调用私有初始化方法并传入另一个模型名及 max_tokens | 指定值沿真实内部调用链传到 SDK 初始化位置，不被旧值覆盖 | test_ai.py：test_private_init_model_returns_model_using_explicit_parameters |
 | 注册表路由 | DeepSeek 配置与额外 args | 返回 SDK 替身；参数正确传递，调用者的 args 字典保持原值 | [test_models_manager.py](../../tests/ai/test_models_manager.py)：test_registered_provider_returns_usable_model |
 | DeepSeek 启用思考 | effort 为 high/max，额外请求体含自定义字段和 disabled thinking，另传 max_tokens | 返回可调用假模型；SDK 收到原 effort 和 enabled thinking；保留其他选项，不修改原请求体 | test_deepseek.py：test_reasoning_effort_enables_thinking_and_preserves_options |
-| 不主动配置思考 | effort 为 Python None 或字符串 none，extra_body 为空或含自定义字段；原有效参数用例不传 effort | 不向 SDK 传 reasoning_effort，不新增 thinking；已有请求体保持原值，不伪造 disabled | test_deepseek.py：test_no_reasoning_effort_does_not_configure_thinking、test_valid_parameters_return_usable_model |
+| 旧/未知模型不主动配置思考 | 旧模型 deepseek-chat 的 effort 为 Python None 或字符串 none，extra_body 为空或含自定义字段；原有效参数用例不传 effort | 不向 SDK 传 reasoning_effort，不新增 thinking；已有请求体保持原值，不伪造 disabled | test_deepseek.py：test_no_reasoning_effort_does_not_configure_thinking、test_valid_parameters_return_usable_model |
+| 已知模型三档与关闭 | deepseek-flash/deepseek-v4-pro，effort 分别为 None/none/low/high/max，请求体已有自定义字段及 enabled thinking | None 不设置参数；low/high/max 原样下发且 enabled；字符串 none 显式下发并改为 disabled，保留其他字段且不修改调用者对象；返回可调用假模型 | test_deepseek.py：test_known_models_forward_thinking_levels_and_explicitly_disable_none |
 | 类型转换 | URL/Key 分别使用字符串或 HttpUrl/SecretStr | 接受合法输入；传给 SDK 的 URL 是字符串，Key 保持 SecretStr | [test_deepseek.py](../../tests/ai/test_deepseek.py)：test_valid_parameters_return_usable_model |
 | 未注册 provider | 空或未知 provider | 拒绝创建，不调用 SDK 初始化 | test_ai.py、test_models_manager.py 的 unknown_provider 用例 |
 | 缺失或空白 Key | 无 Key、None、空串、空格或换行 | 缺失/非法参数校验失败；空白 Key 被明确拒绝，不调用 SDK | 三个测试文件的 missing/blank/validation 用例 |
@@ -32,7 +33,7 @@
 
 ## 厂商模型目录查询
 
-新增 [test_model_catalog.py](../../tests/ai/test_model_catalog.py)，通过公开 list_provider_models → models[provider].list_models → ai/models/deepseek.py 验证目录查询。注册表每项为 ModelProvider(initialize, list_models, base_url)，地址来自厂商模块（DeepSeek 为 DEEPSEEK_BASE_URL）；目录入口只需 provider/api_key，不接收用户地址或当前模型名，因此查询不按当前模型过滤。模型初始化入口 models_provider 的调用参数不变，原有初始化回归继续保留。
+新增 [test_model_catalog.py](../../tests/ai/test_model_catalog.py)，通过公开 list_provider_models → models[provider].list_models → ai/models/deepseek.py 验证目录查询。注册表每项为 ModelProvider(initialize, list_models, base_url)，地址来自厂商模块（DeepSeek 为 DEEPSEEK_BASE_URL）；目录入口只需 provider/api_key，不接收用户地址或当前模型名，因此查询不按当前模型过滤。注册项另可提供 thinking_level_maps（默认空表），由厂商模块维护精确模型 ID 的官方能力，core 导入时合并；/models 响应仍只提供 ID，不从名称推测未知能力。模型初始化入口 models_provider 的调用参数不变，原有初始化回归继续保留。
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
@@ -57,6 +58,6 @@ uv run pytest -q tests/ai --tb=no
 
 ## 覆盖限制
 
-- 不证明真实 DeepSeek 服务接受某个模型名或 effort，也不验证账单、速率限制、网络重试或输出质量。适配参考 [DeepSeek 思考模式协议](https://api-docs.deepseek.com/guides/thinking_mode/)；未主动配置不等于关闭服务端默认思考模式。
+- 不证明真实 DeepSeek 服务接受某个模型名或 effort，也不验证账单、速率限制、网络重试或输出质量。适配参考 [DeepSeek 思考模式协议](https://api-docs.deepseek.com/guides/thinking_mode/)；只有已知支持关闭的模型显式传 none 才构造关闭参数，旧/未知模型仍省略该参数，None 仍沿用服务端配置。
 - 目前只有 DeepSeek 注册项；其他提供商和 OAuth 未覆盖。
 - 会话如何从多个配置文件选择参数，由 [Session 与配置测试](session-and-config.md) 验证。

@@ -11,6 +11,8 @@
 
 本次需求替换旧预期：删除输入 URL、是否查询与保存确认；已登录厂商复用 Key，自动拉取完整列表并全部导入。选模型同时更新默认选择并切换当前 Runtime，不再保持旧默认/旧运行模型。取消只发生在选定模型之前；首次获取失败不接受凭空手填 ID，已有认证和目录时可离线选择缓存。这些变化是明确的交互调整，不以放松断言掩盖旧行为。
 
+本次回归补充：此前完整目录仅导入 ID，导致 deepseek-flash 缺少 thinkingLevelMap，只显示 none。现在将厂商模块已确认的能力随目录合并；旧条目缺失/null 时通过再次 /login 补齐，已有自定义映射和显式空表不覆盖。未知 ID 不按名称猜测能力。
+
 ## core 场景
 
 下表对应 test_model_configuration.py，经公开类型/函数和配置读取器验证。
@@ -18,6 +20,8 @@
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
 | 首次完整导入 | 无配置，提交 flash，完整列表含 flash/pro | 三份 JSON 可读回；两个模型均使用厂商模块地址；auth 权限 0600（POSIX）；无目录/聊天请求或数据库副作用；就绪检查和登录状态正确 | test_first_login_saves_entire_catalog_and_provider_url_without_database |
+| 已知模型能力及旧配置修复 | 首次导入或已存在但缺映射的 deepseek-flash；完整列表另含 deepseek-v4-pro、相似未知 ID | 两个已知 ID 导入 low/high/max；未知 ID 不填能力，旧价格等字段保留；重复导入字节不变 | test_login_imports_known_thinking_capabilities_and_repairs_old_entries |
+| 自定义能力保留 | 已知模型已有 null、空表、自定义 high 或 high→null | 仅 null 补齐官方映射；空表和自定义映射保持原值 | test_known_capabilities_only_fill_missing_or_null_mapping |
 | 不完整/不同默认 | settings 为空、只有厂商、只有旧模型或 null/空白 | 显式选择 pro 后默认厂商/模型一致，并就绪，不保留错配的旧字段 | test_selection_fills_or_replaces_default_fields |
 | 合并与认证复用 | 已缓存 flash，目录含自定义 URL、思考映射、价格、旧条目和其他厂商；认证有额外字段 | 默认切 pro、缓存失效，思考等级保留；导入项地址来自厂商模块，旧项和元数据保留；认证字节不变 | test_selection_updates_default_but_preserves_metadata_other_providers_and_auth |
 | 重复导入 | 完整列表有乱序、重复及首尾空白 ID，再选 pro | 归一、去重，不重复追加；默认选择更新 | test_repeated_import_deduplicates_full_catalog_and_selected_model |
@@ -28,7 +32,7 @@
 | 非法或不匹配目录 | 空列表、空白 ID 或列表中无所选模型 | 拒绝保存，不生成文件 | test_empty_invalid_or_unselectable_catalog_is_not_saved |
 | 损坏 auth | 非 JSON 或非法认证字段，含敏感标记 | 安全异常及完整 traceback 不含原文，现有文件不覆盖、其他文件不生成 | test_invalid_existing_auth_is_rejected_without_overwrite_or_secret_in_traceback |
 | 输入校验 | 未注册厂商、空 ID/Key，或旧 base_url 参数 | 类型校验拒绝，无文件副作用，错误不回显 Key；登录 DTO 不再接受地址 | test_login_input_validation_hides_secrets_and_no_longer_accepts_url |
-| 厂商扩展 | 临时注册 second，模块地址与本地目录函数 | 按注册的地址查询并保存完整列表/默认选择；不初始化聊天，不改 CLI/core | test_new_provider_defines_its_own_address_without_cli_or_core_changes |
+| 厂商扩展 | 临时注册 second，模块地址与本地目录函数 | 按注册的地址查询并保存完整列表/默认选择及注册的能力映射；不初始化聊天，不改 CLI/core | test_new_provider_defines_its_own_address_without_cli_or_core_changes |
 | 不兼容配置 | OAuth 或同 ID 声明其他厂商 | 保存前拒绝，文件集合和字节不变 | test_incompatible_existing_configuration_is_not_overwritten |
 | 显式初始化数据库 | 缺失库，或已有仅含自定义表的库 | 缺失时能经真实 SessionStore 查询；已有时字节不变，不迁移 | test_explicit_database_initialization_only_creates_missing_files |
 
@@ -40,6 +44,7 @@
 | --- | --- | --- | --- |
 | 无模型启动 | 无配置无库，输入普通消息、/resume、/thinking、/exit | 只提示登录，不初始化 SDK、不生成文件、不执行消息 | test_missing_configuration_enters_cli_and_only_prompts_login_without_writes |
 | 首次简化登录后对话 | /LoGiN、厂商、Key、flash、普通消息 | 不问 URL/查询/确认；导入 flash/pro，SDK 收到选择和厂商地址，能立即回答；仅普通消息登记会话，不打印 Key | test_first_login_only_asks_provider_key_and_model_and_saves_full_catalog |
+| Flash 能力导入与 SDK 参数 | 无配置，或启动时已有无映射的 Flash；/login 后依次切换 low/high/max/none | 新旧两种路径均补全完整目录映射，可选等级包含三档；SDK 实际收到 low/high/max/none，none 携带 disabled thinking；不再显示“无有效映射”或旧的省略参数提示 | test_flash_login_imports_levels_and_applies_each_effort |
 | 再次选择模型 | 已登录厂商，输入厂商编号和 pro 编号 | 显示已登录；仅两次输入，不索取 Key；认证字节不变、默认切 pro | test_logged_in_provider_only_asks_model_and_keeps_credentials_unchanged |
 | 对话中切模型 | 先完成一轮 Flash，再 /login 选 Pro，继续第二轮 | SDK 分别初始化 Flash/Pro，新模型收到完整、无重复的历史；仅一条会话记录，默认选择更新 | test_login_switches_running_model_and_preserves_one_session_history |
 | 只登录退出 | 首次成功登录后 /exit | 可生成配置和缺失库，不登记空会话、不发送聊天请求 | test_login_command_itself_never_registers_empty_session |

@@ -11,6 +11,12 @@ from pydantic import BaseModel, ConfigDict, HttpUrl, SecretStr, validate_call
 
 
 DEEPSEEK_BASE_URL = HttpUrl("https://api.deepseek.com")
+# /models 只返回 ID；这里维护官方已确认的能力，按精确 ID 匹配，不猜测未知模型。
+# 协议来源：https://api-docs.deepseek.com/guides/thinking_mode/
+DEEPSEEK_THINKING_LEVEL_MAPS: dict[str, dict[str, str | None]] = {
+    model: {"low": "low", "high": "high", "max": "max"}
+    for model in ("deepseek-flash", "deepseek-v4-pro")
+}
 
 
 class _CatalogModel(BaseModel):
@@ -77,7 +83,8 @@ def deepseek_init(
 ) -> BaseChatModel:
     """初始化 DeepSeek 模型，保留其他 SDK 选项。
 
-    reasoning_effort 是目录映射后的提供商值；未传、None 或字符串 "none" 时不主动配置思考。
+    reasoning_effort 是目录映射后的提供商值；未传或 None 时沿用服务端配置。
+    已知支持关闭推理的模型收到 "none" 时显式关闭；未知/旧模型保留省略参数的兼容行为。
     其他值原样传给 SDK，并按 DeepSeek 协议在 extra_body 中启用 thinking。
     extra_body 是额外请求体；启用思考时覆盖其 thinking 配置，保留其他字段，不修改调用方字典。
     """
@@ -85,7 +92,10 @@ def deepseek_init(
     if not key.strip():
         raise ValueError(f"{model} 的 API_KEY 不能为空")
 
-    if reasoning_effort is not None and reasoning_effort != "none":
+    if reasoning_effort == "none" and model in DEEPSEEK_THINKING_LEVEL_MAPS:
+        args["reasoning_effort"] = "none"
+        extra_body = {**(extra_body or {}), "thinking": {"type": "disabled"}}
+    elif reasoning_effort is not None and reasoning_effort != "none":
         args["reasoning_effort"] = reasoning_effort
         extra_body = {**(extra_body or {}), "thinking": {"type": "enabled"}}
     if extra_body is not None:

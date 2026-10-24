@@ -60,6 +60,37 @@ def test_first_login_saves_entire_catalog_and_provider_url_without_database(tmp_
         assert (settings.root / "agent" / "auth.json").stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_login_imports_known_thinking_capabilities_and_repairs_old_entries(existing: bool) -> None:
+    if existing:
+        _ = document("model-store.json", {"deepseek": {"models": [{
+            "id": "deepseek-flash", "baseUrl": str(DEEPSEEK_BASE_URL), "price": {"input": 1},
+        }]}})
+    names = ("deepseek-flash", "deepseek-v4-pro", "deepseek-flash-unknown")
+    _ = save("deepseek-flash", model_names=names)
+    models = {model.id: model for model in settings.load_model_store()["deepseek"].models}
+    expected = {"low": "low", "high": "high", "max": "max"}
+    assert models["deepseek-flash"].thinkingLevelMap == expected
+    assert models["deepseek-v4-pro"].thinkingLevelMap == expected
+    assert models["deepseek-flash-unknown"].thinkingLevelMap is None
+    path = settings.root / "agent" / "model-store.json"
+    if existing:
+        assert json.loads(path.read_text())["deepseek"]["models"][0]["price"] == {"input": 1}
+    before = path.read_bytes()
+    _ = save("deepseek-flash", model_names=names)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("mapping", [None, {}, {"high": "custom"}, {"high": None}])
+def test_known_capabilities_only_fill_missing_or_null_mapping(mapping: dict[str, str | None] | None) -> None:
+    _ = document("model-store.json", {"deepseek": {"models": [{
+        "id": "deepseek-flash", "baseUrl": str(DEEPSEEK_BASE_URL), "thinkingLevelMap": mapping,
+    }]}})
+    _ = save("deepseek-flash", model_names=("deepseek-flash",))
+    actual = settings.load_model_store()["deepseek"].models[0].thinkingLevelMap
+    assert actual == ({"low": "low", "high": "high", "max": "max"} if mapping is None else mapping)
+
+
 @pytest.mark.parametrize("partial", [{}, {"defaultProvider": "deepseek"}, {"defaultModel": "old-model"},
                                     {"defaultProvider": None, "defaultModel": "  "}])
 def test_selection_fills_or_replaces_default_fields(partial: dict[str, object]) -> None:
@@ -189,6 +220,7 @@ def test_new_provider_defines_its_own_address_without_cli_or_core_changes(monkey
     initializer = Mock(side_effect=AssertionError("配置阶段不初始化聊天模型"))
     monkeypatch.setitem(models_manager.models, "second", models_manager.ModelProvider(
         initialize=initializer, list_models=catalog, base_url=HttpUrl("https://second.test/v1"),
+        thinking_level_maps={"second-pro": {"high": "max"}},
     ))
     prepared = asyncio.run(configuration.prepare_provider_login("second", SecretStr("fake-login-key")))
     assert prepared.model_names == ("second-flash", "second-pro")
@@ -196,6 +228,7 @@ def test_new_provider_defines_its_own_address_without_cli_or_core_changes(monkey
     assert settings.load_settings().defaultProvider == "second"
     assert check_model_configuration().ready
     assert all(str(model.baseUrl) == "https://second.test/v1" for model in settings.load_model_store()["second"].models)
+    assert settings.load_model_store()["second"].models[1].thinkingLevelMap == {"high": "max"}
     assert received == [("fake-login-key", "https://second.test/v1")]
     initializer.assert_not_called()
 

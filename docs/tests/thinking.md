@@ -41,7 +41,7 @@ basedpyright --pythonpath .venv/bin/python src/omt/core/bootstrap.py src/omt/cor
 ## 覆盖限制
 
 - 不证明服务端接受某个 effort 或实际输出质量，不请求真实模型/MCP，也不测试真实终端外观。
-- none 仅表示不主动发送思考参数，不证明关闭提供商默认思考模式。
+- 本组旧/测试模型的 none 保留省略参数语义，不证明关闭服务端推理。已知 DeepSeek Flash/V4 Pro 的显式 none/disabled 和登录能力修复由[模型登录测试](model-login.md)及[模型适配测试](ai-models.md)验证；终端不再统一宣称 none 必定省略参数。
 - 本组 /thinking 切换仅属于当前 CLI 进程，不持久化、不改变 HTTP 进程，也不是每个 session 的独立配置。
 - /thinking 使用当前运行模型的目录快照，不自动重读外部编辑；/login 的持久化、显式切模型及新模型映射回归见[模型登录测试](model-login.md)，不受本组“不持久化”约束。
 - 重建的互斥检查保护运行/历史/激活操作，不是跨进程锁；应用入口仍须顺序管理生命周期，不能把旧 Manager 引用继续分发给其他调用者。

@@ -50,6 +50,30 @@ def test_valid_parameters_return_usable_model(
     )
 
 
+@pytest.mark.parametrize("model", ["deepseek-flash", "deepseek-v4-pro"])
+@pytest.mark.parametrize("effort", [None, "none", "low", "high", "max"])
+def test_known_models_forward_thinking_levels_and_explicitly_disable_none(
+    model: str, effort: str | None, chat_model_factory: Mock, chat_model: FakeListChatModel,
+) -> None:
+    body: dict[str, object] = {"custom_option": True, "thinking": {"type": "enabled"}}
+    result = deepseek_init(
+        "deepseek", model=model, base_url=HttpUrl("https://example.test/v1"),
+        api_key=SecretStr("fake-key"), reasoning_effort=effort, extra_body=body,
+    )
+    assert result is chat_model
+    assert result.invoke("本地输入").content == "这是本地测试回复"
+    options = chat_model_factory.call_args.kwargs
+    if effort is None:
+        assert "reasoning_effort" not in options
+        assert options["extra_body"] == body
+    else:
+        assert options["reasoning_effort"] == effort
+        assert options["extra_body"] == {
+            "custom_option": True, "thinking": {"type": "disabled" if effort == "none" else "enabled"},
+        }
+    assert body == {"custom_option": True, "thinking": {"type": "enabled"}}
+
+
 @pytest.mark.parametrize("effort", ["high", "max"])
 def test_reasoning_effort_enables_thinking_and_preserves_options(
     effort: str, chat_model_factory: Mock, chat_model: FakeListChatModel,

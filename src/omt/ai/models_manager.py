@@ -1,13 +1,13 @@
 """注册厂商的模型初始化和目录查询能力；上层不依赖具体厂商模块。"""
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from langchain_core.language_models import BaseChatModel
 from pydantic import HttpUrl, SecretStr, ValidationError
 
-from .models.deepseek import DEEPSEEK_BASE_URL, deepseek_init, list_deepseek_models
+from .models.deepseek import DEEPSEEK_BASE_URL, DEEPSEEK_THINKING_LEVEL_MAPS, deepseek_init, list_deepseek_models
 
 
 class ModelCatalogLoader(Protocol):
@@ -16,15 +16,22 @@ class ModelCatalogLoader(Protocol):
 
 @dataclass(frozen=True)
 class ModelProvider:
-    """厂商适配；base_url 由对应厂商模块定义，登录和全量目录导入使用该地址。"""
+    """厂商适配；base_url 是内置地址，thinking_level_maps 是按精确模型 ID 的已知能力。
+
+    未登记能力的模型不推断等级；默认空表，新厂商可只提供连接/查询能力。
+    """
 
     initialize: Callable[..., BaseChatModel]
     list_models: ModelCatalogLoader
     base_url: HttpUrl
+    thinking_level_maps: Mapping[str, Mapping[str, str | None]] = field(
+        default_factory=dict[str, Mapping[str, str | None]],
+    )
 
 
 models: dict[str, ModelProvider] = {
-    "deepseek": ModelProvider(initialize=deepseek_init, list_models=list_deepseek_models, base_url=DEEPSEEK_BASE_URL),
+    "deepseek": ModelProvider(initialize=deepseek_init, list_models=list_deepseek_models,
+                              base_url=DEEPSEEK_BASE_URL, thinking_level_maps=DEEPSEEK_THINKING_LEVEL_MAPS),
 }
 
 

@@ -220,7 +220,8 @@ def save_model_login(login: ModelLogin, *, model_names: Sequence[str]) -> LoginR
     """自动合并完整厂商目录及认证，并把用户选择设为默认模型；不访问网络或终端。
 
     model_names 为本次取得的全部 ID（也可为离线缓存），选择必须在该列表中。
-    地址统一来自厂商模块；同 ID 的思考映射/额外元数据、其他厂商和未返回旧条目保留。
+    地址和已知思考能力来自厂商模块；仅补齐缺失/null 映射，已有映射（含空表）不覆盖。
+    同 ID 的额外元数据、其他厂商和未返回旧条目保留，不猜测未登记模型能力。
     同厂商共用一个 Key。默认模型会更新，已有思考等级不变；不会在这里重建运行模型。
     JSON 逐文件原子替换，权限 0600；没有跨文件事务/跨进程锁，损坏文件不自动覆盖。
     """
@@ -237,18 +238,24 @@ def save_model_login(login: ModelLogin, *, model_names: Sequence[str]) -> LoginR
     assert isinstance(provider_data, dict)
     entries = provider_data["models"]
     assert isinstance(entries, list)
-    base_url = model_providers[login.provider].base_url
+    adapter = model_providers[login.provider]
+    base_url = adapter.base_url
     for name in names:
         selected = next((entry for entry in provider_models if entry.id == name), None)
         if selected is not None and selected.provider not in (None, login.provider):
             raise ValueError("已有目录项的模型厂商不一致，请人工检查。")
-        definition = ModelDefinition(id=name, provider=login.provider, baseUrl=base_url)
+        mapping = adapter.thinking_level_maps.get(name)
+        definition = ModelDefinition(id=name, provider=login.provider, baseUrl=base_url,
+                                     thinkingLevelMap=dict(mapping) if mapping is not None else None)
+        serialized = definition.model_dump(mode="json", exclude_none=True)
         if selected is None:
-            entries.append(definition.model_dump(mode="json", exclude_none=True))
+            entries.append(serialized)
         else:
             entry = entries[provider_models.index(selected)]
             assert isinstance(entry, dict)
             entry.update({"id": name, "provider": login.provider, "baseUrl": str(base_url)})
+            if entry.get("thinkingLevelMap") is None and definition.thinkingLevelMap is not None:
+                entry["thinkingLevelMap"] = serialized["thinkingLevelMap"]
 
     documents.selection.update({"defaultProvider": login.provider, "defaultModel": login.model_name})
     _ = Settings.model_validate(documents.selection)

@@ -28,7 +28,8 @@ def build_model(settings: Settings, *, definition: ModelDefinition | None = None
     """解析连接及可选思考等级；未配置或没有有效映射时按 "none" 处理。
 
     settings 中显式的非 none 等级按所选模型的 thinkingLevelMap 映射后传给提供商。
-    未配置、null、字符串 "none"、映射缺失或对应值为 null 时不主动配置思考。
+    未配置、null、字符串 "none"、映射缺失或对应值为 null 时解析为 none，
+    是否显式关闭推理由厂商适配按模型协议决定。
     模型选择与认证仍严格校验，不回退到其他模型或环境密钥。
     definition 可传入已解析的目录快照，以保证展示和初始化使用同一映射；其 ID/provider 必须匹配设置。
     """

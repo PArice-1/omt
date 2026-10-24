@@ -95,7 +95,7 @@ def display_history(history: Sequence[AnyMessage]) -> None:
 
 
 def display_thinking(status: ThinkingStatus) -> None:
-    """显示请求等级和实际映射值，不把 none 误称为关闭服务端默认思考。"""
+    """显示请求等级和实际映射值；none 的请求语义由厂商适配负责。"""
     print(f"模型：{status.provider} / {status.model}")
     print(f"推理等级：{status.level}")
     print(f"实际 reasoning_effort：{status.reasoning_effort}")
@@ -103,7 +103,7 @@ def display_thinking(status: ThinkingStatus) -> None:
     if status.level != "none" and status.level not in status.available_levels:
         print("当前模型无有效映射，按 none 处理。")
     if status.reasoning_effort == "none":
-        print("none 表示不主动设置思考参数，不保证关闭服务端默认思考模式。")
+        print("none 的请求行为由厂商适配决定，具体以模型协议为准。")
 
 
 def print_warnings(warnings: Sequence[str]) -> None:

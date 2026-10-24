@@ -101,9 +101,9 @@ HTTP 显式创建即登记，允许空会话；历史响应只投影用户/助�
 ~/.omt/agent/model-store.json
 ```
 
-模型登录分三层：`cli/login.py` 仅展示和选择 provider、模型 ID，未登录时读取隐藏 Key，不收集地址/查询确认/保存确认，也不读写 JSON；`core/model_configuration.py` 用 `is_provider_logged_in` 检查本地认证，`prepare_provider_login` 复用凭据并取得完整目录，`save_model_login` 自动合并配置。厂商地址和查询协议在 `ai/models/<厂商>.py`，注册表项为 `ModelProvider(initialize, list_models, base_url)`；DeepSeek 的默认地址是模块常量 `DEEPSEEK_BASE_URL`。新增厂商定义地址和两种能力后注册，不修改 CLI/core 分支。
+模型登录分三层：`cli/login.py` 仅展示和选择 provider、模型 ID，未登录时读取隐藏 Key，不收集地址/查询确认/保存确认，也不读写 JSON；`core/model_configuration.py` 用 `is_provider_logged_in` 检查本地认证，`prepare_provider_login` 复用凭据并取得完整目录，`save_model_login` 自动合并配置。厂商地址和查询协议在 `ai/models/<厂商>.py`，注册表项为 `ModelProvider(initialize, list_models, base_url)`；DeepSeek 的默认地址是模块常量 `DEEPSEEK_BASE_URL`。新增厂商定义地址和两种能力后注册，不修改 CLI/core 分支。ModelProvider 另有可选 thinking_level_maps，按精确模型 ID 提供厂商模块维护的官方能力，默认空表，不改变原有调用方式。
 
-`/login` 每次自动查询厂商完整列表，未选模型前只读、不落盘。已保存 Key 且未显式替换时，查询失败可使用本地目录；新 Key 或无缓存时获取失败需重试，不再允许随意手填未知 ID。选择支持编号或完整名称。auth 仍按厂商共用一个 Key；已登录选择模型直接复用，不重复索取。model-store 导入全部返回 ID，而非仅所选项；同 ID 使用厂商内置地址，保留思考映射/额外元数据、其他厂商及未返回的旧条目，不推断能力。settings 更新默认厂商/模型，保留思考等级；损坏 JSON、非法字段和已有非 API 认证拒绝覆盖。
+`/login` 每次自动查询厂商完整列表，未选模型前只读、不落盘。已保存 Key 且未显式替换时，查询失败可使用本地目录；新 Key 或无缓存时获取失败需重试，不再允许随意手填未知 ID。选择支持编号或完整名称。auth 仍按厂商共用一个 Key；已登录选择模型直接复用，不重复索取。model-store 导入全部返回 ID，而非仅所选项；同 ID 使用厂商内置地址，保留思考映射/额外元数据、其他厂商及未返回的旧条目；已知能力由厂商模块补齐缺失/null 的 thinkingLevelMap，已有映射（包括显式空表）不覆盖。当前为 deepseek-flash/deepseek-v4-pro 提供 low/high/max，未知 ID 不推测能力。settings 更新默认厂商/模型，保留思考等级；损坏 JSON、非法字段和已有非 API 认证拒绝覆盖。
 
 Python 接口兼容性：ProviderConnection/ModelLogin 不再接受 base_url；list_provider_models 只接收 provider/api_key；ModelProvider 必须提供 base_url；save_model_login 新增必填的完整 model_names 参数，LoginResult 移除旧 is_default（所选模型始终设为默认）。仓库调用方和测试同步调整；models_provider 初始化接口、三份 JSON 字段及用户数据路径不变，已有配置无需迁移。
 
@@ -154,7 +154,7 @@ CLI 的 Key 输入临时使用 DummyHistory，结束/取消后清空缓冲并恢
 
 `Model` 构造时立即调用 `_init_model()`，经注册表进入 `deepseek_init()`，最终使用 LangChain SDK 创建可直接调用的聊天模型，而非可配置模型包装器。传给 `Agent` 的是 **`client.model`**，不是 Model 包装对象本身。
 
-DeepSeek 适配将有效 `reasoning_effort` 原样传给 SDK，并合并 `extra_body={"thinking": {"type": "enabled"}}`。未传 effort、Python `None` 或字符串 `"none"` 时不主动设置思考，也不向 SDK 传 effort；这不保证关闭提供商默认思考模式。已有 `extra_body` 的其他字段及 temperature/max_tokens 等选项保留，启用时覆盖其中的 thinking 配置，不修改调用者字典。规则参考 [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)；离线测试不证明真实服务接受某个 effort。
+DeepSeek 适配将有效 `reasoning_effort` 原样传给 SDK，并合并 `extra_body={"thinking": {"type": "enabled"}}`。已知支持关闭推理的 deepseek-flash/deepseek-v4-pro 收到字符串 `"none"` 时，显式下发 reasoning_effort="none" 和 disabled thinking；未传/Python None 则沿用服务端配置。旧/未知 ID 的字符串 none 保留省略参数的兼容行为，不据此保证关闭服务端推理。已有 `extra_body` 的其他字段及 temperature/max_tokens 等选项保留，覆盖 thinking 时不修改调用者字典。规则参考 [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)；离线测试不证明真实服务接受某个 effort。
 
 `baseUrl` 是凭据将被发送到的目标地址，应只使用可信地址。测试不通过读取真实配置验证连接。
 

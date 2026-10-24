@@ -33,7 +33,7 @@ from omt.core import bootstrap, model_configuration, settings
 from omt.core.conversation import Conversation
 from omt.core.session_manager import SessionError
 from omt.core.model_configuration import ModelLogin, save_model_login
-from omt.core.store import SessionStore
+from omt.core.store import SessionStore, initialize_session_database
 
 
 class RecordingModel(FakeMessagesListChatModel):
@@ -107,6 +107,39 @@ def test_first_login_only_asks_provider_key_and_model_and_saves_full_catalog(
     assert "fake-private-key" not in output
     prompts = [call.args[0] for call in terminal.prompt_async.call_args_list]
     assert not any("base_url" in prompt or "确认" in prompt or "y/N" in prompt for prompt in prompts)
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_flash_login_imports_levels_and_applies_each_effort(
+    existing: bool, sdk: Mock, catalog: AsyncMock, capsys: pytest.CaptureFixture[str],
+) -> None:
+    catalog.return_value = ["deepseek-flash", "deepseek-v4-pro"]
+    if existing:
+        _ = save_model_login(ModelLogin(provider="deepseek", model_name="deepseek-flash", api_key=SecretStr("fake-key")),
+                             model_names=("deepseek-flash",))
+        path = settings.root / "agent" / "model-store.json"
+        _ = path.write_text(json.dumps({"deepseek": {"models": [{
+            "id": "deepseek-flash", "baseUrl": str(DEEPSEEK_BASE_URL),
+        }]}}))
+        initialize_session_database(CliSettings().db_path)
+        inputs = ["/login", "deepseek", "deepseek-flash"]
+    else:
+        inputs = ["/login", "deepseek", "fake-key", "deepseek-flash"]
+    inputs.extend(["/thinking low", "/thinking high", "/thinking max", "/thinking none", "/exit"])
+    asyncio.run(run_cli(terminal=terminal_for(inputs)))
+    calls = sdk.call_args_list
+    # 已有运行环境会在 /login 后再初始化一次；末四次对应实际切换的四种 effort。
+    assert [call.kwargs["reasoning_effort"] for call in calls[-4:]] == ["low", "high", "max", "none"]
+    assert calls[-1].kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+    models = settings.load_model_store()["deepseek"].models
+    assert all(model.thinkingLevelMap == {"low": "low", "high": "high", "max": "max"} for model in models)
+    output = capsys.readouterr().out
+    assert "可选等级：none、high、low、max" in output
+    assert "none 的请求行为由厂商适配决定" in output
+    assert "none 表示不主动设置思考参数" not in output
+    assert "当前模型无有效映射" not in output
+    if existing:
+        assert "已登录" in output
 
 
 def test_logged_in_provider_only_asks_model_and_keeps_credentials_unchanged(capsys: pytest.CaptureFixture[str]) -> None:

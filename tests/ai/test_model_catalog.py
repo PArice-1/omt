@@ -15,15 +15,18 @@ from omt.ai.models_manager import list_provider_models, supported_providers
 
 
 @pytest.mark.parametrize("base_url", ["https://api.deepseek.com", "https://example.test/proxy/v1/"])
-def test_catalog_uses_user_base_url_preserves_prefix_and_sorts_ids(
+def test_catalog_uses_provider_default_or_explicit_low_level_prefix(
     monkeypatch: pytest.MonkeyPatch, base_url: str,
 ) -> None:
     opener = Mock()
     response = io.BytesIO(b'{"data":[{"id":"second"},{"id":"first"},{"id":"second"}]}')
     opener.open.return_value = response
     monkeypatch.setattr(deepseek, "build_opener", Mock(return_value=opener))
-    assert list_provider_models(provider="deepseek", api_key=SecretStr("fake-api-key"),
-                                base_url=HttpUrl(base_url)) == ["first", "second"]
+    if base_url == "https://api.deepseek.com":
+        result = list_provider_models(provider="deepseek", api_key=SecretStr("fake-api-key"))
+    else:
+        result = deepseek.list_deepseek_models(api_key=SecretStr("fake-api-key"), base_url=HttpUrl(base_url))
+    assert result == ["first", "second"]
     request = opener.open.call_args.args[0]
     assert request.full_url == base_url.rstrip("/") + "/models"
     assert request.get_header("Authorization") == "Bearer fake-api-key"
@@ -77,4 +80,4 @@ def test_catalog_errors_hide_details_and_close_http_resources(
 
 def test_unregistered_provider_catalog_is_rejected() -> None:
     with pytest.raises(ValueError, match="未注册"):
-        _ = list_provider_models(provider="unknown", api_key=SecretStr("fake-key"), base_url=HttpUrl("https://example.test"))
+        _ = list_provider_models(provider="unknown", api_key=SecretStr("fake-key"))

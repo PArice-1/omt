@@ -26,12 +26,12 @@ core 是与入口无关的共用核心，不限定于编码场景。核心不导
 | 模块 | 职责 | 不承担的工作 |
 | --- | --- | --- |
 | [cli/app.py](../src/omt/cli/app.py) | 交互生命周期、延迟创建首个会话、调用 Manager | 检查点加载、并发和失败保护 |
-| [cli/login.py](../src/omt/cli/login.py) | /login 输入、隐藏 Key、厂商/模型列表展示和确认 | JSON 读写、厂商协议、运行模型切换 |
-| [core/model_configuration.py](../src/omt/core/model_configuration.py) | 类型化 API 登录、配置就绪检查、目录路由、配置合并持久化 | 终端提示、会话编排、聊天请求、数据库初始化 |
+| [cli/login.py](../src/omt/cli/login.py) | /login 选择、隐藏首次 Key、厂商登录状态与模型列表展示 | JSON 读写、厂商协议、运行模型切换 |
+| [core/model_configuration.py](../src/omt/core/model_configuration.py) | 类型化 API 登录、凭据复用、完整目录与缓存、默认选择持久化 | 终端提示、会话编排、聊天请求、数据库初始化 |
 | [cli/commands.py](../src/omt/cli/commands.py) | /resume、退出、编号映射和当前选择 | 模型执行、直接读写 Store |
 | [cli/terminal.py](../src/omt/cli/terminal.py) | 同步/异步输入校验、事件和历史渲染、警告 | 保存历史、HTTP 响应 |
 | [api/](../src/omt/api/) | lifespan、请求/响应和稳定错误；当前暂未启用 Bearer 校验 | CLI 命令、会话内部编排 |
-| [core/bootstrap.py](../src/omt/core/bootstrap.py) | 提示词/模型配置和依赖组装；SessionRuntime 持有当前 Manager 并协调推理强度重建 | 输入循环、HTTP 传输 |
+| [core/bootstrap.py](../src/omt/core/bootstrap.py) | 提示词/模型配置和依赖组装；SessionRuntime 持有当前 Manager 并协调模型/推理强度重建 | 输入循环、HTTP 传输 |
 | [core/configuration.py](../src/omt/core/configuration.py) | 共用会话选项、类型化 MCP 连接配置；入口各自继承并指定前缀 | HTTP 令牌、读取模型认证 |
 | [core/session_manager.py](../src/omt/core/session_manager.py) | 按 ID 操作、目录归属、最新历史、互斥/容量、失败和关闭清理 | 跨进程锁、回滚、全局当前会话 |
 | [core/conversation.py](../src/omt/core/conversation.py) | 初始提示词/Skills、一轮同步/异步执行、历史加载和终态校验、过程事件 | 索引、模型配置、终端显示 |
@@ -62,7 +62,7 @@ HTTP 默认通过 `bootstrap.open_session_manager(options)`；CLI 默认通过 `
 3. 持有一个 AsyncSqliteSaver，创建 Store 与 Manager。
 4. 退出先关闭当前 Manager，取消并等待活跃历史/运行操作，再关闭 Saver 连接。
 
-CLI 的 SessionRuntime 提供只读 `manager`/`thinking` 和异步 `set_thinking_level(level)`。修改时按启动目录快照解析新等级，重新初始化 Model、创建 Agent，再调用旧 Manager.rebuild(agent) 创建继任 Manager；只在全部成功后发布新 Manager 和新状态。构建失败/取消保持旧实例及状态；不请求模型试运行，不写回设置或修改缓存。MCP 工具复用启动发现结果，不重复发现；整个生命周期复用同一个 Saver。HTTP 仍使用固定 Manager，不暴露推理强度修改端点。
+CLI 的 SessionRuntime 提供只读 `manager`/`thinking` 和异步 `set_thinking_level(level)`、`set_model(provider, model_name)`。前者按当前模型目录快照解析等级；后者显式重读所选模型定义和认证，保留请求思考等级，缺映射时实际按 none。两者共用重建链：初始化 Model、创建 Agent，再调用旧 Manager.rebuild(agent) 创建继任 Manager；全部成功后才发布新 Manager、设置和目录快照。构建失败/取消保持旧实例及状态；不请求模型试运行，Runtime 自身不写配置。MCP 工具复用启动发现结果，整个生命周期复用同一个 Saver。HTTP 仍使用固定 Manager，不暴露模型/推理强度修改端点。
 
 `run_cli(manager_factory=...)` 可继续注入固定 Manager，此时不读取额外模型配置，不支持切换；也可注入提供 SessionRuntime 的异步工厂。调用方应每次通过 runtime.manager 取得最新实例，不再使用切换前的引用。
 
@@ -71,7 +71,7 @@ SessionSettings 共享 db_path、workspace_path、max_concurrent_runs、skill_ro
 ### CLI 交互
 
 - PromptSession 异步读取；校验与 Manager 共用 validate_message：1～32000 字符，非全空白、无 NUL，保留合法输入原文。
-- /login 随时列出已注册厂商并收集 API 参数，由 core 保存。无模型时普通输入和其他业务命令仅提示登录；登录命令不登记会话、不提交模型。运行中添加模型不自动替换 Manager。
+- /login 随时列出厂商及登录状态，仅未登录时收集 Key，由 core 复用认证、拉取完整目录并保存所选默认模型。无模型时其他业务输入仅提示登录；命令本身不登记会话、不提交聊天请求。已有 Runtime 时立即切换模型，保留会话和历史；固定 Manager 只保存并提示不能切换。
 - /exit、/quit、EOF 退出；命令支持首尾空白及大小写混合。resume 是 /resume 的别名；resume-help 等不同词仍是普通消息。
 - 首条普通请求才调用 Manager.create_session，以原文前 10 字符为标题。仅看列表、退出或输入 Ctrl-C 不登记空会话。登记失败不执行模型，下一次输入可重试；首轮开始后即使失败/取消也保留索引。
 - /resume 调用 Manager.list_sessions，只显示当前工作目录的记录。0 固定为当前选择；尚未登记时显示“新对话”和启动 UTC 时间。其他编号沿用 Store 修改时间排序，标题折为单行。
@@ -101,11 +101,13 @@ HTTP 显式创建即登记，允许空会话；历史响应只投影用户/助�
 ~/.omt/agent/model-store.json
 ```
 
-模型登录分三层：`cli/login.py` 只收集 provider、model_name、api_key、base_url 和确认；`core/model_configuration.py` 提供 ProviderConnection/ModelLogin、check_model_configuration、discover_models、save_model_login；`ai/models_manager.py` 的单一注册表将厂商映射到 ModelProvider(initialize, list_models)，具体目录请求在 `ai/models/<厂商>.py`。新增厂商实现两种能力并添加一条注册项，不修改 CLI/core 的厂商分支。注册表值从单个初始化函数调整为上述适配对象，models_provider 的调用接口保持不变。
+模型登录分三层：`cli/login.py` 仅展示和选择 provider、模型 ID，未登录时读取隐藏 Key，不收集地址/查询确认/保存确认，也不读写 JSON；`core/model_configuration.py` 用 `is_provider_logged_in` 检查本地认证，`prepare_provider_login` 复用凭据并取得完整目录，`save_model_login` 自动合并配置。厂商地址和查询协议在 `ai/models/<厂商>.py`，注册表项为 `ModelProvider(initialize, list_models, base_url)`；DeepSeek 的默认地址是模块常量 `DEEPSEEK_BASE_URL`。新增厂商定义地址和两种能力后注册，不修改 CLI/core 分支。
 
-登录只补齐缺失/null/空白的默认厂商和模型，保留已有默认选择/思考等级。auth 按厂商共用一个 Key，重复登录更新该厂商凭据；model-store 只保存提交的模型，同 ID 更新用户输入的 URL，保留思考映射与额外元数据。目录查询可选、需要明确授权，发送到用户输入的 base_url，不回退到官网；不推断模型能力。损坏 JSON、非法字段和已有非 API 认证拒绝覆盖。
+`/login` 每次自动查询厂商完整列表，未选模型前只读、不落盘。已保存 Key 且未显式替换时，查询失败可使用本地目录；新 Key 或无缓存时获取失败需重试，不再允许随意手填未知 ID。选择支持编号或完整名称。auth 仍按厂商共用一个 Key；已登录选择模型直接复用，不重复索取。model-store 导入全部返回 ID，而非仅所选项；同 ID 使用厂商内置地址，保留思考映射/额外元数据、其他厂商及未返回的旧条目，不推断能力。settings 更新默认厂商/模型，保留思考等级；损坏 JSON、非法字段和已有非 API 认证拒绝覆盖。
 
-CLI 的 Key 输入临时使用 DummyHistory，结束/取消后清空缓冲并恢复显示；登录期间暂停普通消息校验，退出后恢复。每份变更 JSON 用 0600 临时文件原子替换，跨文件没有事务和跨进程锁；确认前取消不落盘，I/O 失败后可能需重新 /login。core 的读取器仍严格只读；数据库初始化由 store 的显式函数承担，不隐式放进配置保存、查询或 bootstrap。运行中 /login 只持久化，不自动切换当前 Model 或 Manager；首次登录才启动尚未创建的运行环境，输入状态和会话历史不因添加模型而重置。
+Python 接口兼容性：ProviderConnection/ModelLogin 不再接受 base_url；list_provider_models 只接收 provider/api_key；ModelProvider 必须提供 base_url；save_model_login 新增必填的完整 model_names 参数，LoginResult 移除旧 is_default（所选模型始终设为默认）。仓库调用方和测试同步调整；models_provider 初始化接口、三份 JSON 字段及用户数据路径不变，已有配置无需迁移。
+
+CLI 的 Key 输入临时使用 DummyHistory，结束/取消后清空缓冲并恢复显示；登录期间暂停普通消息校验，退出后恢复。每份变更 JSON 用 0600 临时文件原子替换，没有跨文件事务或跨进程锁；模型选择完成前取消不落盘，I/O 失败后可能需重新 /login。core 读取器仍严格只读，数据库初始化由 store 的显式函数承担，不放进配置保存或查询。首次登录启动运行环境，已有 Runtime 时由 cli/app.py 调用 set_model；选择已持久化但切换失败时保留旧运行模型并提示，二者不构成事务。会话选择、历史、检查点和失败保护不因切换而重置。
 
 仓库内同名的 `agent/` 文件不是当前默认配置来源。切换工作目录或在导入后修改 HOME，不会自动重定位已计算的 `settings.root`。
 

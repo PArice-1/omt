@@ -1,34 +1,36 @@
-"""通过 core 的公开登录接口验证配置持久化；模型和网络完全隔离。"""
+"""core 登录、完整目录导入和默认选择回归；网络、凭据与用户目录完全隔离。"""
 
 import asyncio
 import json
 import os
 import sqlite3
 import traceback
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic import HttpUrl, SecretStr, ValidationError
 
 from omt.ai import models_manager
+from omt.ai.models.deepseek import DEEPSEEK_BASE_URL
 from omt.core import model_configuration as configuration, settings
 from omt.core.model_configuration import ModelLogin, ProviderConnection, check_model_configuration, save_model_login
 from omt.core.store import SessionStore, initialize_session_database
 
 
 @pytest.fixture(autouse=True)
-def clear_selection_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def isolated_login(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for key in ("defaultProvider", "defaultModel", "defaultThinkingLevel"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr("omt.ai.models.deepseek.build_opener", Mock(side_effect=AssertionError("禁止真实 HTTP")))
     yield
 
 
-def login_request(*, model_name: str = "first-model", provider: str = "deepseek") -> ModelLogin:
-    return ModelLogin(provider=provider, model_name=model_name, api_key=SecretStr("fake-login-key"),
-                      base_url=HttpUrl("https://example.test/custom/v1"))
+def save(model_name: str = "flash", *, provider: str = "deepseek", model_names: Sequence[str] = ("flash", "pro")) -> configuration.LoginResult:
+    return save_model_login(ModelLogin(provider=provider, model_name=model_name, api_key=SecretStr("fake-login-key")),
+                            model_names=model_names)
 
 
 def document(name: str, value: object) -> Path:
@@ -39,84 +41,121 @@ def document(name: str, value: object) -> Path:
     return path
 
 
-def test_first_login_creates_three_files_without_network_or_database(tmp_path: Path) -> None:
+def test_first_login_saves_entire_catalog_and_provider_url_without_database(tmp_path: Path) -> None:
     assert not check_model_configuration().ready
+    assert not configuration.is_provider_logged_in("deepseek")
     assert not (settings.root / "agent").exists()
-    result = save_model_login(login_request())
-    assert result.is_default
-    assert settings.load_settings().defaultProvider == "deepseek"
-    assert settings.load_settings().defaultModel == "first-model"
+    result = save()
+    assert result.model_name == "flash"
+    assert settings.load_settings().defaultModel == "flash"
     credential = settings.load_auth()["deepseek"].key
     assert credential is not None and credential.get_secret_value() == "fake-login-key"
     models = settings.load_model_store()["deepseek"].models
-    assert [entry.id for entry in models] == ["first-model"]
-    assert str(models[0].baseUrl) == "https://example.test/custom/v1"
-    assert models[0].thinkingLevelMap is None
+    assert [entry.id for entry in models] == ["flash", "pro"]
+    assert all(entry.baseUrl == DEEPSEEK_BASE_URL and entry.thinkingLevelMap is None for entry in models)
     assert check_model_configuration().ready
+    assert configuration.is_provider_logged_in("deepseek")
     assert not (tmp_path / "agent" / "state").exists()
     if os.name == "posix":
         assert (settings.root / "agent" / "auth.json").stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("partial", [{}, {"defaultProvider": "deepseek"}, {"defaultModel": "first-model"},
+@pytest.mark.parametrize("partial", [{}, {"defaultProvider": "deepseek"}, {"defaultModel": "old-model"},
                                     {"defaultProvider": None, "defaultModel": "  "}])
-def test_login_fills_missing_default_fields(partial: dict[str, object]) -> None:
+def test_selection_fills_or_replaces_default_fields(partial: dict[str, object]) -> None:
     _ = document("settings.json", partial)
-    assert not check_model_configuration().ready
-    _ = save_model_login(login_request())
-    assert settings.load_settings().defaultModel == "first-model"
+    _ = save("pro")
+    assert settings.load_settings().defaultModel == "pro"
     assert settings.load_settings().defaultProvider == "deepseek"
     assert check_model_configuration().ready
 
 
-def test_additional_model_preserves_default_and_existing_metadata_and_updates_provider_key() -> None:
-    _ = save_model_login(login_request())
-    selection = document("settings.json", {"defaultProvider": "deepseek", "defaultModel": "first-model",
-                                           "defaultThinkingLevel": "high"})
+def test_selection_updates_default_but_preserves_metadata_other_providers_and_auth() -> None:
+    _ = save()
+    _ = document("settings.json", {"defaultProvider": "deepseek", "defaultModel": "flash",
+                                   "defaultThinkingLevel": "high"})
     _ = document("model-store.json", {"deepseek": {"source": "keep", "models": [{
-        "id": "first-model", "baseUrl": "https://old.test/v1", "thinkingLevelMap": {"high": "max"},
-        "cost": {"input": 1},
-    }]}, "other": {"models": []}})
-    _ = document("auth.json", {"deepseek": {"type": "api_key", "key": "old-fake-key", "label": "keep"},
-                               "other": {"type": "oauth", "access": "fake-token"}})
-    before = selection.read_bytes()
+        "id": "flash", "baseUrl": "https://old.test/v1", "thinkingLevelMap": {"high": "max"}, "cost": {"input": 1},
+    }, {"id": "legacy", "baseUrl": "https://legacy.test"}]}, "other": {"models": []}})
+    auth = document("auth.json", {"deepseek": {"type": "api_key", "key": "fake-login-key", "label": "keep"},
+                                  "other": {"type": "oauth", "access": "fake-token"}})
+    before_auth = auth.read_bytes()
     _ = settings.load_settings()
-    result = save_model_login(login_request(model_name="second-model"))
-    assert not result.is_default
-    assert selection.read_bytes() == before
+    _ = save("pro")
+    assert settings.load_settings().defaultModel == "pro"
     assert settings.load_settings().defaultThinkingLevel == "high"
-    catalog = settings.load_model_store()
-    assert [entry.id for entry in catalog["deepseek"].models] == ["first-model", "second-model"]
-    assert str(catalog["deepseek"].models[0].baseUrl) == "https://old.test/v1"
-    assert catalog["deepseek"].models[0].thinkingLevelMap == {"high": "max"}
-    assert '"source": "keep"' in (selection.parent / "model-store.json").read_text()
-    assert '"cost"' in (selection.parent / "model-store.json").read_text()
-    assert '"label": "keep"' in (selection.parent / "auth.json").read_text()
-    assert settings.load_auth()["other"].type == "oauth"
-    credential = settings.load_auth()["deepseek"].key
-    assert credential is not None and credential.get_secret_value() == "fake-login-key"
-
-
-def test_repeated_login_updates_url_without_duplicate_or_losing_thinking_mapping() -> None:
-    _ = document("model-store.json", {"deepseek": {"models": [{
-        "id": "first-model", "baseUrl": "https://old.test", "thinkingLevelMap": {"high": "max"},
-    }]}})
-    _ = save_model_login(login_request())
     models = settings.load_model_store()["deepseek"].models
-    assert len(models) == 1
-    assert str(models[0].baseUrl) == "https://example.test/custom/v1"
+    assert [entry.id for entry in models] == ["flash", "legacy", "pro"]
+    assert models[0].baseUrl == DEEPSEEK_BASE_URL
     assert models[0].thinkingLevelMap == {"high": "max"}
+    assert str(models[1].baseUrl) == "https://legacy.test/"
+    assert '"cost"' in (auth.parent / "model-store.json").read_text()
+    assert '"source": "keep"' in (auth.parent / "model-store.json").read_text()
+    assert auth.read_bytes() == before_auth
+    assert settings.load_auth()["other"].type == "oauth"
+
+
+def test_repeated_import_deduplicates_full_catalog_and_selected_model() -> None:
+    _ = save(model_names=(" pro ", "flash", "flash"))
+    _ = save("pro")
+    assert [entry.id for entry in settings.load_model_store()["deepseek"].models] == ["flash", "pro"]
+    assert settings.load_settings().defaultModel == "pro"
 
 
 @pytest.mark.parametrize("missing", ["auth.json", "settings.json", "model-store.json"])
 def test_login_repairs_missing_file_and_invalidates_cached_settings(missing: str) -> None:
-    _ = save_model_login(login_request())
+    _ = save()
     _ = settings.load_settings()
     (settings.root / "agent" / missing).unlink()
     assert not check_model_configuration().ready
-    _ = save_model_login(login_request())
+    _ = save("pro")
     assert check_model_configuration().ready
-    assert settings.load_settings().defaultModel == "first-model"
+    assert settings.load_settings().defaultModel == "pro"
+
+
+def test_prepare_reuses_key_fetches_all_models_and_does_not_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    _ = save()
+    directory = settings.root / "agent"
+    before = {path: path.read_bytes() for path in directory.iterdir()}
+    discover = AsyncMock(return_value=["pro", "flash", "new-model", "flash"])
+    monkeypatch.setattr(configuration, "discover_models", discover)
+    prepared = asyncio.run(configuration.prepare_provider_login("deepseek"))
+    assert prepared.model_names == ("flash", "new-model", "pro")
+    assert not prepared.from_cache
+    connection = discover.call_args.args[0]
+    assert isinstance(connection, ProviderConnection)
+    assert connection.api_key.get_secret_value() == "fake-login-key"
+    assert {path: path.read_bytes() for path in directory.iterdir()} == before
+
+
+def test_prepare_requires_key_for_first_login_without_writing() -> None:
+    with pytest.raises(ValueError, match="尚未登录"):
+        _ = asyncio.run(configuration.prepare_provider_login("deepseek"))
+    assert not (settings.root / "agent").exists()
+
+
+@pytest.mark.parametrize("has_cache", [False, True])
+def test_prepare_network_failure_uses_cache_only_for_saved_key(
+    monkeypatch: pytest.MonkeyPatch, has_cache: bool,
+) -> None:
+    if has_cache:
+        _ = save()
+    monkeypatch.setattr(configuration, "discover_models", AsyncMock(side_effect=ValueError("fake-secret-marker")))
+    if has_cache:
+        prepared = asyncio.run(configuration.prepare_provider_login("deepseek"))
+        assert prepared.from_cache and prepared.model_names == ("flash", "pro")
+    with pytest.raises(ValueError) as raised:
+        _ = asyncio.run(configuration.prepare_provider_login("deepseek", SecretStr("fake-new-key")))
+    assert "fake-secret-marker" not in str(raised.value)
+    if not has_cache:
+        assert not (settings.root / "agent").exists()
+
+
+@pytest.mark.parametrize("model_names", [(), (" ",), ("different",)])
+def test_empty_invalid_or_unselectable_catalog_is_not_saved(model_names: tuple[str, ...]) -> None:
+    with pytest.raises(ValueError):
+        _ = save(model_names=model_names)
+    assert not (settings.root / "agent").exists()
 
 
 @pytest.mark.parametrize("bad", ["not-json fake-secret-marker", '{"deepseek":{"type":123,"key":"fake-secret-marker"}}'])
@@ -125,69 +164,54 @@ def test_invalid_existing_auth_is_rejected_without_overwrite_or_secret_in_traceb
     _ = path.write_text(bad)
     assert not check_model_configuration().ready
     with pytest.raises(ValueError) as raised:
-        _ = save_model_login(login_request())
+        _ = save()
     assert "fake-secret-marker" not in "".join(traceback.format_exception(raised.value))
     assert path.read_text() == bad
     assert not (path.parent / "settings.json").exists()
 
 
-@pytest.mark.parametrize("change", [
-    {"provider": "unknown"}, {"model_name": " "}, {"api_key": " "},
-    {"base_url": "file:///tmp/x"}, {"base_url": "https://fake-secret@example.test"},
-    {"base_url": "https://example.test?key=fake-secret"},
-])
-def test_login_input_validation_hides_sensitive_values_and_has_no_side_effects(change: dict[str, object]) -> None:
+@pytest.mark.parametrize("change", [{"provider": "unknown"}, {"model_name": " "}, {"api_key": " "},
+                                    {"base_url": "https://example.test"}])
+def test_login_input_validation_hides_secrets_and_no_longer_accepts_url(change: dict[str, object]) -> None:
     with pytest.raises(ValidationError) as raised:
-        _ = ModelLogin.model_validate({"provider": "deepseek", "model_name": "first-model",
-                                      "api_key": "fake-secret", "base_url": "https://example.test", **change})
+        _ = ModelLogin.model_validate({"provider": "deepseek", "model_name": "flash", "api_key": "fake-secret", **change})
     assert "fake-secret" not in str(raised.value)
     assert not (settings.root / "agent").exists()
 
 
-def test_new_provider_routes_catalog_and_persistence_without_core_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_new_provider_defines_its_own_address_without_cli_or_core_changes(monkeypatch: pytest.MonkeyPatch) -> None:
     received: list[tuple[str, str]] = []
 
     def catalog(*, api_key: SecretStr, base_url: HttpUrl) -> list[str]:
         received.append((api_key.get_secret_value(), str(base_url)))
-        return ["new-provider-model"]
+        return ["second-flash", "second-pro"]
 
     initializer = Mock(side_effect=AssertionError("配置阶段不初始化聊天模型"))
     monkeypatch.setitem(models_manager.models, "second", models_manager.ModelProvider(
-        initialize=initializer, list_models=catalog,
+        initialize=initializer, list_models=catalog, base_url=HttpUrl("https://second.test/v1"),
     ))
-    assert configuration.supported_providers() == ("deepseek", "second")
-    connection = ProviderConnection(provider="second", api_key=SecretStr("fake-login-key"),
-                                    base_url=HttpUrl("https://example.test/custom/v1"))
-    assert asyncio.run(configuration.discover_models(connection)) == ["new-provider-model"]
-    _ = save_model_login(login_request(provider="second", model_name="new-provider-model"))
+    prepared = asyncio.run(configuration.prepare_provider_login("second", SecretStr("fake-login-key")))
+    assert prepared.model_names == ("second-flash", "second-pro")
+    _ = save("second-pro", provider="second", model_names=prepared.model_names)
     assert settings.load_settings().defaultProvider == "second"
     assert check_model_configuration().ready
-    assert received == [("fake-login-key", "https://example.test/custom/v1")]
+    assert all(str(model.baseUrl) == "https://second.test/v1" for model in settings.load_model_store()["second"].models)
+    assert received == [("fake-login-key", "https://second.test/v1")]
     initializer.assert_not_called()
 
 
-@pytest.mark.parametrize("case", ["oauth", "mismatched-model", "incomplete-other-provider"])
-def test_login_rejects_incompatible_existing_configuration_before_writing(case: str) -> None:
-    _ = document("settings.json", {"defaultProvider": "other"} if case == "incomplete-other-provider" else {})
+@pytest.mark.parametrize("case", ["oauth", "mismatched-model"])
+def test_incompatible_existing_configuration_is_not_overwritten(case: str) -> None:
     if case == "oauth":
         _ = document("auth.json", {"deepseek": {"type": "oauth", "access": "fake-token"}})
-    elif case == "mismatched-model":
+    else:
         _ = document("model-store.json", {"deepseek": {"models": [{
-            "id": "first-model", "provider": "other", "baseUrl": "https://example.test",
+            "id": "flash", "provider": "other", "baseUrl": "https://example.test",
         }]}})
     before = {path: path.read_bytes() for path in (settings.root / "agent").iterdir()}
     with pytest.raises(ValueError):
-        _ = save_model_login(login_request())
+        _ = save()
     assert {path: path.read_bytes() for path in (settings.root / "agent").iterdir()} == before
-
-
-def test_successful_login_invalidates_previously_cached_default_selection() -> None:
-    _ = save_model_login(login_request())
-    assert settings.load_settings().defaultModel == "first-model"
-    _ = document("settings.json", {"defaultProvider": "deepseek", "defaultModel": "second-model"})
-    _ = save_model_login(login_request(model_name="second-model"))
-    assert settings.load_settings().defaultModel == "second-model"
-    assert check_model_configuration().ready
 
 
 @pytest.mark.parametrize("existing", [False, True])

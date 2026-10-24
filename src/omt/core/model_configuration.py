@@ -4,29 +4,28 @@ import asyncio
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, JsonValue, SecretStr, TypeAdapter, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, TypeAdapter, ValidationError, field_validator
 
-from omt.ai.models_manager import list_provider_models, supported_providers as supported_providers
+from omt.ai.models_manager import list_provider_models, models as model_providers, supported_providers as supported_providers
 
 from . import settings
 from .settings import AuthCredential, ModelDefinition, NonEmptyString, ProviderModels, Settings
 
 
 class ProviderConnection(BaseModel):
-    """用户授权的 API 连接；base_url 是凭据发送目标，不默认替换为官网。
+    """厂商 API 认证；provider 来自注册表，api_key 不能空白。
 
-    provider 必须来自厂商注册表，目前只有 deepseek。api_key 不能空白；
-    base_url 必须为 HTTP(S)，禁止在 URL 中夹带认证、查询参数或片段。
+    地址由 ai/models/ 对应厂商模块维护，不再作为登录参数。
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, hide_input_in_errors=True, extra="forbid")
     provider: NonEmptyString
     api_key: SecretStr = Field(repr=False)
-    base_url: HttpUrl
 
     @field_validator("provider")
     @classmethod
@@ -40,13 +39,6 @@ class ProviderConnection(BaseModel):
     def _nonblank_key(cls, value: SecretStr) -> SecretStr:
         if not value.get_secret_value().strip():
             raise ValueError("API Key 不能为空")
-        return value
-
-    @field_validator("base_url")
-    @classmethod
-    def _connection_url(cls, value: HttpUrl) -> HttpUrl:
-        if value.username is not None or value.password is not None or value.query or value.fragment:
-            raise ValueError("模型地址不得包含认证、查询参数或片段")
         return value
 
 
@@ -77,17 +69,26 @@ class ConfigurationStatus:
 
 
 @dataclass(frozen=True)
+class ProviderLogin:
+    """待选择的完整目录；from_cache 表示查询失败后复用本地目录，connection 不用于展示。"""
+
+    connection: ProviderConnection = field(repr=False)
+    model_names: tuple[str, ...]
+    from_cache: bool
+
+
+@dataclass(frozen=True)
 class LoginResult:
-    """已保存的选择；is_default 表示本次模型与持久化默认选择一致，不代表已切换运行模型。"""
+    """已自动保存的默认模型选择；是否已切换运行实例由入口另行处理。"""
 
     provider: str
     model_name: str
-    is_default: bool
 
 
 _DOCUMENT = TypeAdapter(dict[str, JsonValue])
 _AUTH = TypeAdapter(dict[str, AuthCredential])
 _CATALOG = TypeAdapter(dict[str, ProviderModels])
+_MODEL_NAMES = TypeAdapter(list[NonEmptyString], config=ConfigDict(hide_input_in_errors=True))
 
 
 @dataclass
@@ -148,12 +149,59 @@ def check_model_configuration() -> ConfigurationStatus:
 
 
 async def discover_models(connection: ProviderConnection) -> list[str]:
-    """按厂商路由目录查询；仅在用户同意向 base_url 发送 Key 后显式调用。
+    """查询厂商完整目录；地址来自厂商模块，不保存文件或发送聊天请求。"""
+    return await asyncio.to_thread(list_provider_models, provider=connection.provider, api_key=connection.api_key)
 
-    目录发现失败不影响手动登录。查询不保存任何文件，不发送聊天请求。
+
+def _stored_api_key(documents: _Documents, provider: str) -> SecretStr | None:
+    if provider not in supported_providers():
+        raise ValueError("模型厂商未注册")
+    credential = documents.credentials.get(provider)
+    if credential is None:
+        return None
+    if credential.type != "api_key":
+        raise ValueError("该厂商已有非 API 认证，请人工检查后再登录。")
+    key = credential.key
+    return key if key is not None and key.get_secret_value().strip() else None
+
+
+def is_provider_logged_in(provider: str) -> bool:
+    """只检查是否保存了非空 API Key，不联网，也不代表凭据仍然有效。"""
+    return _stored_api_key(_load_documents(), provider) is not None
+
+
+def _normalize_model_names(model_names: Sequence[str]) -> tuple[str, ...]:
+    try:
+        names = tuple(sorted(set(_MODEL_NAMES.validate_python(list(model_names)))))
+    except ValidationError:
+        raise ValueError("厂商模型列表无效") from None
+    if not names:
+        raise ValueError("厂商模型列表为空")
+    return names
+
+
+async def prepare_provider_login(provider: str, api_key: SecretStr | None = None) -> ProviderLogin:
+    """复用认证并获取完整列表，尚不落盘；只有未登录的厂商才需要 api_key。
+
+    每次登录尝试刷新目录。已有 Key 且未显式替换时，网络失败可回退本地目录；
+    新 Key 查询失败则报错，不能把它与旧目录拼接后假称登录成功。
+    调用本函数表示用户请求使用该厂商模块定义的地址，不再额外询问是否拉取。
     """
-    return await asyncio.to_thread(list_provider_models, provider=connection.provider,
-                                   api_key=connection.api_key, base_url=connection.base_url)
+    documents = _load_documents()
+    key = api_key if api_key is not None else _stored_api_key(documents, provider)
+    if key is None:
+        raise ValueError("该厂商尚未登录，请输入 API Key。")
+    connection = ProviderConnection(provider=provider, api_key=key)
+    from_cache = False
+    try:
+        names = _normalize_model_names(await discover_models(connection))
+    except Exception:
+        cached = documents.providers.get(provider)
+        if api_key is not None or cached is None or not cached.models:
+            raise ValueError("无法获取厂商模型列表，请检查网络或 API Key 后重试。") from None
+        names = _normalize_model_names([model.id for model in cached.models if model.provider in (None, provider)])
+        from_cache = True
+    return ProviderLogin(connection, names, from_cache)
 
 
 def _write_document(path: Path, document: dict[str, JsonValue]) -> None:
@@ -168,27 +216,20 @@ def _write_document(path: Path, document: dict[str, JsonValue]) -> None:
             os.unlink(temporary)
 
 
-def save_model_login(login: ModelLogin) -> LoginResult:
-    """合并保存 API 登录，不访问网络、数据库或终端，也不切换运行模型。
+def save_model_login(login: ModelLogin, *, model_names: Sequence[str]) -> LoginResult:
+    """自动合并完整厂商目录及认证，并把用户选择设为默认模型；不访问网络或终端。
 
-    login 包含用户明确提交的厂商、模型名、Key 和连接地址。同厂商共用一个 Key，
-    重复登录会替换该厂商 Key；同 ID 更新 URL，保留目录思考映射/额外元数据。
-    仅补齐缺失/null/空白的默认选择，不覆盖已有默认模型及思考等级。
-    JSON 逐文件以 0600 临时文件原子替换，不提供跨文件事务或跨进程锁；
-    损坏文件和已有非 API 认证拒绝覆盖。成功或部分 I/O 失败都会清除设置缓存。
+    model_names 为本次取得的全部 ID（也可为离线缓存），选择必须在该列表中。
+    地址统一来自厂商模块；同 ID 的思考映射/额外元数据、其他厂商和未返回旧条目保留。
+    同厂商共用一个 Key。默认模型会更新，已有思考等级不变；不会在这里重建运行模型。
+    JSON 逐文件原子替换，权限 0600；没有跨文件事务/跨进程锁，损坏文件不自动覆盖。
     """
+    names = _normalize_model_names(model_names)
+    if login.model_name not in names:
+        raise ValueError("请选择该厂商列表中的模型")
     documents = _load_documents()
-    partial = documents.partial
-    if partial.defaultModel is None and partial.defaultProvider not in (None, login.provider):
-        raise ValueError("默认厂商尚缺模型，请先登录该厂商以补齐默认选择。")
-    credential = documents.credentials.get(login.provider)
-    if credential is not None and credential.type != "api_key":
-        raise ValueError("该厂商已有非 API 认证，请人工检查后再登录。")
+    _ = _stored_api_key(documents, login.provider)
     provider_models = documents.providers.get(login.provider, ProviderModels(models=[])).models
-    selected = next((entry for entry in provider_models if entry.id == login.model_name), None)
-    if selected is not None and selected.provider not in (None, login.provider):
-        raise ValueError("已有目录项的模型厂商不一致，请人工检查。")
-
     provider_auth = documents.auth.setdefault(login.provider, {})
     assert isinstance(provider_auth, dict)
     provider_auth.update({"type": "api_key", "key": login.api_key.get_secret_value()})
@@ -196,19 +237,21 @@ def save_model_login(login: ModelLogin) -> LoginResult:
     assert isinstance(provider_data, dict)
     entries = provider_data["models"]
     assert isinstance(entries, list)
-    definition = ModelDefinition(id=login.model_name, provider=login.provider, baseUrl=login.base_url)
-    if selected is None:
-        entries.append(definition.model_dump(mode="json", exclude_none=True))
-    else:
-        entry = entries[provider_models.index(selected)]
-        assert isinstance(entry, dict)
-        entry.update({"id": login.model_name, "provider": login.provider, "baseUrl": str(login.base_url)})
+    base_url = model_providers[login.provider].base_url
+    for name in names:
+        selected = next((entry for entry in provider_models if entry.id == name), None)
+        if selected is not None and selected.provider not in (None, login.provider):
+            raise ValueError("已有目录项的模型厂商不一致，请人工检查。")
+        definition = ModelDefinition(id=name, provider=login.provider, baseUrl=base_url)
+        if selected is None:
+            entries.append(definition.model_dump(mode="json", exclude_none=True))
+        else:
+            entry = entries[provider_models.index(selected)]
+            assert isinstance(entry, dict)
+            entry.update({"id": name, "provider": login.provider, "baseUrl": str(base_url)})
 
-    if partial.defaultProvider is None:
-        documents.selection["defaultProvider"] = login.provider
-    if partial.defaultModel is None:
-        documents.selection["defaultModel"] = login.model_name
-    default = Settings.model_validate(documents.selection)
+    documents.selection.update({"defaultProvider": login.provider, "defaultModel": login.model_name})
+    _ = Settings.model_validate(documents.selection)
     directory = settings.root / "agent"
     try:
         for name, document in (("auth.json", documents.auth), ("model-store.json", documents.catalog),
@@ -218,5 +261,4 @@ def save_model_login(login: ModelLogin) -> LoginResult:
                 _write_document(path, document)
     finally:
         settings.load_settings.cache_clear()
-    return LoginResult(login.provider, login.model_name,
-                       default.defaultProvider == login.provider and default.defaultModel == login.model_name)
+    return LoginResult(login.provider, login.model_name)

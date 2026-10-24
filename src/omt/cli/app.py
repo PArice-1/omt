@@ -34,8 +34,8 @@ async def run_cli(
     manager_factory 在整个输入循环期间持有 SessionRuntime 或固定 Manager，退出时
     负责关闭。默认工厂先通过 core 检查本地配置，不完整时只提示 /login，登录后才
     创建缺失数据库并组装运行环境；已有完整配置仍要求预建库。自定义工厂绕过检查。
-    terminal 可注入内存终端。/login 可随时保存配置，但不替换已有运行模型；
-    首次登录补齐默认选择后可立即使用。Ctrl-C/外部取消向上传播，不登记空会话。
+    terminal 可注入内存终端。/login 复用厂商凭据、导入完整目录并自动保存默认选择；
+    已有 runtime 通过重建切换模型，不重置会话。Ctrl-C/外部取消向上传播，不登记空会话。
     """
     options = options or CliSettings()
     factory = manager_factory or open_manager
@@ -73,8 +73,15 @@ async def run_cli(
                     continue
                 result = await login(terminal)
                 if result is not None:
-                    if active is not None:
-                        print("本次运行继续使用原模型，不自动重建；新配置供后续初始化使用。")
+                    if isinstance(active, SessionRuntime):
+                        try:
+                            await active.set_model(result.provider, result.model_name)
+                        except Exception:
+                            print("[模型切换失败] 默认选择已保存，当前运行仍保留原模型，请检查配置后重试。")
+                        else:
+                            display_thinking(active.thinking)
+                    elif active is not None:
+                        print("默认选择已保存；当前入口使用固定 Manager，不支持运行中切换。")
                     else:
                         status = model_configuration.check_model_configuration()
                         if not status.ready:

@@ -10,6 +10,9 @@ from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, ConfigDict, HttpUrl, SecretStr, validate_call
 
 
+DEEPSEEK_BASE_URL = HttpUrl("https://api.deepseek.com")
+
+
 class _CatalogModel(BaseModel):
     id: str
 
@@ -29,11 +32,11 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def list_deepseek_models(*, api_key: SecretStr, base_url: HttpUrl) -> list[str]:
-    """从用户指定的 DeepSeek 兼容地址查询 ID，不初始化聊天模型。
+def list_deepseek_models(*, api_key: SecretStr, base_url: HttpUrl = DEEPSEEK_BASE_URL) -> list[str]:
+    """查询 DeepSeek 的完整模型 ID 列表，不初始化聊天模型。
 
-    base_url 与聊天连接共用，例如 https://api.deepseek.com 或代理的 /v1 前缀；
-    在该路径后追加 /models，不回退到官方域名。调用方必须事先获得发送 Key 的同意。
+    默认地址由本厂商模块维护，/login 无需输入。base_url 仅供底层显式覆盖（如测试
+    或代理适配），在其路径后追加 /models；不跟随重定向改变凭据发送目标。
     十秒超时、响应上限 1 MiB、不跟随重定向；只返回 ID，不猜测思考能力。
     """
     if not api_key.get_secret_value().strip():

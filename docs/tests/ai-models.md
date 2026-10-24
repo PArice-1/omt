@@ -32,11 +32,11 @@
 
 ## 厂商模型目录查询
 
-新增 [test_model_catalog.py](../../tests/ai/test_model_catalog.py)，通过公开 list_provider_models → models[provider].list_models → ai/models/deepseek.py 验证目录查询。注册表每项从初始化函数扩展为 ModelProvider(initialize, list_models)，模型初始化入口 models_provider 的调用参数不变，原有初始化回归继续保留。
+新增 [test_model_catalog.py](../../tests/ai/test_model_catalog.py)，通过公开 list_provider_models → models[provider].list_models → ai/models/deepseek.py 验证目录查询。注册表每项为 ModelProvider(initialize, list_models, base_url)，地址来自厂商模块（DeepSeek 为 DEEPSEEK_BASE_URL）；目录入口只需 provider/api_key，不接收用户地址或当前模型名，因此查询不按当前模型过滤。模型初始化入口 models_provider 的调用参数不变，原有初始化回归继续保留。
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
-| 官网或自定义代理 | 官方 URL 或带 /proxy/v1/ 的用户地址，内存 HTTP 响应包含重复、乱序 ID | 在输入地址后追加 /models，保留路径前缀；带 Bearer 和十秒超时；返回去重排序 ID，关闭响应，不回退官网 | test_catalog_uses_user_base_url_preserves_prefix_and_sorts_ids |
+| 厂商地址与底层显式覆盖 | 注册表入口不传 URL；底层适配另测带 /proxy/v1/ 的覆盖地址，内存响应含重复/乱序的多个 ID | 默认请求模块定义的官网；底层仍能保留覆盖地址前缀以便测试/代理适配（不在 /login 暴露）。追加 /models，带 Bearer 和十秒超时，完整返回全部去重排序 ID并关闭响应 | test_catalog_uses_provider_default_or_explicit_low_level_prefix |
 | 非法响应 | 空列表、错误 ID 类型、非法 JSON、超过 1 MiB | 安全 ValueError，不显示响应或测试敏感标记，响应关闭 | test_invalid_catalog_response_is_sanitized_and_closed |
 | 网络及读取异常 | HTTPError、URLError 或 IncompleteRead，错误含敏感标记 | 安全错误，不回显详情；存在的 HTTP 响应关闭；安装的 handler 不允许重定向 | test_catalog_errors_hide_details_and_close_http_resources |
 | 未注册厂商 | unknown provider | 明确拒绝，不访问网络 | test_unregistered_provider_catalog_is_rejected |

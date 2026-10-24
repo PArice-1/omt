@@ -111,8 +111,8 @@ def _thinking_status(settings: Settings, definition: ModelDefinition) -> Thinkin
 class SessionRuntime:
     """拥有当前 Manager 的应用生命周期；切换只影响本实例，不改写配置文件。
 
-    由 open_session_runtime 创建，固定目录快照、工具和 Checkpointer；只有
-    set_thinking_level 成功后才替换 manager。调用者每次操作读取最新 manager，
+    由 open_session_runtime 创建，复用工具和 Checkpointer；只有
+    set_thinking_level/set_model 成功后才替换 manager。调用者每次操作读取最新 manager，
     不应长期缓存旧实例。关闭资源由外层异步上下文负责。
     """
 
@@ -147,22 +147,42 @@ class SessionRuntime:
         Manager，但复用历史和失败保护；不调用模型试运行，不重写设置缓存或文件。
         并行切换立即拒绝；有运行/历史操作时交接也会被 Manager 拒绝。
         """
-        if self._closed:
-            raise SessionError("manager_closed", "服务正在关闭")
-        if self._changing:
-            raise SessionError("manager_busy", "正在切换推理强度")
+        self._ensure_can_change()
         candidate = Settings.model_validate({**self._settings.model_dump(), "defaultThinkingLevel": level})
         if (candidate.defaultThinkingLevel or "none") == self.thinking.level:
             return
+        await self._replace_model(candidate, self._definition)
+
+    async def set_model(self, provider: str, model_name: str) -> None:
+        """选择已导入的模型供后续轮次使用，不读写默认选择或发送试运行请求。
+
+        provider/model_name 为注册厂商及目录精确 ID。本次重新读取目录快照和认证，
+        保留当前请求思考等级，缺映射按 none；复用会话、MCP 和检查点。
+        构建失败、取消或 Manager 忙碌时保持原实例及状态。
+        """
+        self._ensure_can_change()
+        candidate = Settings.model_validate({**self._settings.model_dump(),
+                                             "defaultProvider": provider, "defaultModel": model_name})
+        definition = _load_model_definition(candidate)
+        await self._replace_model(candidate, definition)
+
+    def _ensure_can_change(self) -> None:
+        if self._closed:
+            raise SessionError("manager_closed", "服务正在关闭")
+        if self._changing:
+            raise SessionError("manager_busy", "正在切换模型")
+
+    async def _replace_model(self, candidate: Settings, definition: ModelDefinition) -> None:
         self._changing = True
         try:
-            model = build_model(candidate, definition=self._definition)
+            model = build_model(candidate, definition=definition)
             agent = await build_agent(model, checkpointer=self._saver, extra_tools=self._mcp_tools)
             if self._closed:
                 raise SessionError("manager_closed", "服务正在关闭")
             successor = await self._manager.rebuild(agent)
             self._manager = successor
             self._settings = candidate
+            self._definition = definition
         finally:
             self._changing = False
 

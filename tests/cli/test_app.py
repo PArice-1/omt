@@ -130,9 +130,10 @@ def test_cli_skill_roots_use_user_default_or_explicit_configuration(
     assert [root.resolve() for root in roots] == expected
 
 
-def test_cli_preserves_legacy_mcp_default_but_can_disable_it(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_mcp_is_disabled_by_default_and_explicit_servers_are_supported(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OMT_CLI_MCP_SERVERS")
-    options = CliSettings()
-    assert options.mcp_servers["knowledge"].connection()["transport"] == "stdio"
-    monkeypatch.setenv("OMT_CLI_MCP_SERVERS", "{}")
     assert CliSettings().mcp_servers == {}
+    monkeypatch.setenv("OMT_CLI_MCP_SERVERS", '{"local": {"transport": "stdio", "command": "fake-server"}}')
+    connection = CliSettings().mcp_servers["local"].connection()
+    assert connection["transport"] == "stdio"
+    assert connection["command"] == "fake-server"

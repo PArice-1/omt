@@ -1,8 +1,64 @@
 """将通用模型选项适配为 DeepSeek 的初始化参数。"""
 
+from http.client import HTTPException, HTTPResponse
+from typing import IO, ClassVar, override
+from urllib.error import HTTPError, URLError
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
-from pydantic import HttpUrl, SecretStr, validate_call
+from pydantic import BaseModel, ConfigDict, HttpUrl, SecretStr, validate_call
+
+
+class _CatalogModel(BaseModel):
+    id: str
+
+
+class _CatalogResponse(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(hide_input_in_errors=True)
+    data: list[_CatalogModel]
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    @override
+    def redirect_request(
+        self, req: Request, fp: IO[bytes], code: int, msg: str,
+        headers: object, newurl: str,
+    ) -> None:
+        # 不允许重定向把 Key 发送到未经用户确认的目标。
+        return None
+
+
+def list_deepseek_models(*, api_key: SecretStr, base_url: HttpUrl) -> list[str]:
+    """从用户指定的 DeepSeek 兼容地址查询 ID，不初始化聊天模型。
+
+    base_url 与聊天连接共用，例如 https://api.deepseek.com 或代理的 /v1 前缀；
+    在该路径后追加 /models，不回退到官方域名。调用方必须事先获得发送 Key 的同意。
+    十秒超时、响应上限 1 MiB、不跟随重定向；只返回 ID，不猜测思考能力。
+    """
+    if not api_key.get_secret_value().strip():
+        raise ValueError("API Key 不能为空")
+    if base_url.username is not None or base_url.password is not None or base_url.query or base_url.fragment:
+        raise ValueError("模型地址不得包含认证、查询参数或片段")
+    request = Request(
+        str(base_url).rstrip("/") + "/models",
+        headers={"Authorization": f"Bearer {api_key.get_secret_value()}", "Accept": "application/json"},
+    )
+    try:
+        response: HTTPResponse = build_opener(_NoRedirect()).open(request, timeout=10)
+        with response:
+            content = response.read(1024 * 1024 + 1)
+        if len(content) > 1024 * 1024:
+            raise ValueError("响应过大")
+        catalog = _CatalogResponse.model_validate_json(content)
+        ids = sorted({model.id.strip() for model in catalog.data if model.id.strip()})
+        if not ids:
+            raise ValueError("模型列表为空")
+        return ids
+    except (URLError, OSError, ValueError, HTTPException) as exc:
+        if isinstance(exc, HTTPError):
+            exc.close()
+        raise ValueError("无法获取模型列表，请检查连接和 API Key，或手动输入模型名称。") from None
 
 
 @validate_call

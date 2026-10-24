@@ -30,11 +30,24 @@
 
 正常初始化用例同时核对 `configurable_fields=None`、`config_prefix=None`：OMT 的 Model 需要直接可调用的聊天模型，SDK 工厂不返回运行时再选模型的包装器。此项覆盖 test_ai.py、test_models_manager.py 和 test_deepseek.py 的正常初始化断言。
 
+## 厂商模型目录查询
+
+新增 [test_model_catalog.py](../../tests/ai/test_model_catalog.py)，通过公开 list_provider_models → models[provider].list_models → ai/models/deepseek.py 验证目录查询。注册表每项从初始化函数扩展为 ModelProvider(initialize, list_models)，模型初始化入口 models_provider 的调用参数不变，原有初始化回归继续保留。
+
+| 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
+| --- | --- | --- | --- |
+| 官网或自定义代理 | 官方 URL 或带 /proxy/v1/ 的用户地址，内存 HTTP 响应包含重复、乱序 ID | 在输入地址后追加 /models，保留路径前缀；带 Bearer 和十秒超时；返回去重排序 ID，关闭响应，不回退官网 | test_catalog_uses_user_base_url_preserves_prefix_and_sorts_ids |
+| 非法响应 | 空列表、错误 ID 类型、非法 JSON、超过 1 MiB | 安全 ValueError，不显示响应或测试敏感标记，响应关闭 | test_invalid_catalog_response_is_sanitized_and_closed |
+| 网络及读取异常 | HTTPError、URLError 或 IncompleteRead，错误含敏感标记 | 安全错误，不回显详情；存在的 HTTP 响应关闭；安装的 handler 不允许重定向 | test_catalog_errors_hide_details_and_close_http_resources |
+| 未注册厂商 | unknown provider | 明确拒绝，不访问网络 | test_unregistered_provider_catalog_is_rejected |
+
+注册第二个测试厂商即可完成查询和持久化、不改 core/CLI 的扩展性证据在[模型登录测试](model-login.md)。
+
 ## 隔离方式
 
 [ai/conftest.py](../../tests/ai/conftest.py) 仅替换 DeepSeek 模块使用的 `init_chat_model`，返回 FakeListChatModel。测试仍经过真实的 Model、models_provider、deepseek_init，且使用无效的测试 Key，不读取认证文件、不调用网络。
 
-新增提供商时为该提供商建立同类的初始化替身，不以真实账户证明单元测试通过。
+目录测试替换 DeepSeek 模块的 build_opener，返回内存字节流或受控异常，不请求用户 URL 或官方网络。新增提供商时为该提供商建立同类的初始化和 HTTP 替身，不以真实账户证明单元测试通过。
 
 ## 执行
 

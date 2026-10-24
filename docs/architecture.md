@@ -26,6 +26,8 @@ core 是与入口无关的共用核心，不限定于编码场景。核心不导
 | 模块 | 职责 | 不承担的工作 |
 | --- | --- | --- |
 | [cli/app.py](../src/omt/cli/app.py) | 交互生命周期、延迟创建首个会话、调用 Manager | 检查点加载、并发和失败保护 |
+| [cli/login.py](../src/omt/cli/login.py) | /login 输入、隐藏 Key、厂商/模型列表展示和确认 | JSON 读写、厂商协议、运行模型切换 |
+| [core/model_configuration.py](../src/omt/core/model_configuration.py) | 类型化 API 登录、配置就绪检查、目录路由、配置合并持久化 | 终端提示、会话编排、聊天请求、数据库初始化 |
 | [cli/commands.py](../src/omt/cli/commands.py) | /resume、退出、编号映射和当前选择 | 模型执行、直接读写 Store |
 | [cli/terminal.py](../src/omt/cli/terminal.py) | 同步/异步输入校验、事件和历史渲染、警告 | 保存历史、HTTP 响应 |
 | [api/](../src/omt/api/) | lifespan、请求/响应和稳定错误；当前暂未启用 Bearer 校验 | CLI 命令、会话内部编排 |
@@ -34,9 +36,9 @@ core 是与入口无关的共用核心，不限定于编码场景。核心不导
 | [core/session_manager.py](../src/omt/core/session_manager.py) | 按 ID 操作、目录归属、最新历史、互斥/容量、失败和关闭清理 | 跨进程锁、回滚、全局当前会话 |
 | [core/conversation.py](../src/omt/core/conversation.py) | 初始提示词/Skills、一轮同步/异步执行、历史加载和终态校验、过程事件 | 索引、模型配置、终端显示 |
 | [core/events.py](../src/omt/core/events.py) | RunEvent 数据与 EventHandler 类型 | 渲染、SSE、持久化 |
-| [core/store.py](../src/omt/core/store.py) | 预建 sessions 表的元数据读写 | 消息、自动建表、检查点恢复 |
+| [core/store.py](../src/omt/core/store.py) | 已有索引读写；显式初始化缺失数据库 | 消息、隐式建表、已有库迁移、检查点恢复 |
 | [core/settings.py](../src/omt/core/settings.py) | 模型配置、认证与目录读取及校验 | 会话编排、OAuth |
-| [ai/model.py](../src/omt/ai/model.py)、[models_manager.py](../src/omt/ai/models_manager.py) | 提供商注册和模型初始化 | 历史和展示 |
+| [ai/model.py](../src/omt/ai/model.py)、[models_manager.py](../src/omt/ai/models_manager.py)、[ai/models/](../src/omt/ai/models/) | 厂商注册、模型初始化及厂商目录查询协议 | 配置持久化、历史和展示 |
 | [agent/agent.py](../src/omt/agent/agent.py) | create_agent 与同步/异步调用、v3 流包装 | CLI、拼接历史、手动执行工具 |
 | [core/prompts/](../src/omt/core/prompts/)、[skills.py](../src/omt/core/skills.py) | 包内基础规则、可信目录的 Skill 元数据发现 | 沙箱、自动执行 Skill 脚本 |
 | [tools_manager.py](../src/omt/core/tools_manager.py)、[tools/](../src/omt/core/tools/) | 静态工具注册、文件和 Bash | 权限审批、事务回滚 |
@@ -52,7 +54,7 @@ uv run python -m omt.cli
 uv run omt-api
 ```
 
-omt 指向 omt.cli.app:main。main() 仅在最外层调用一次 asyncio.run(run_cli())；已有事件循环应 await run_cli()。omt-api 指向 omt.api.app:main，默认监听 127.0.0.1:8000，单 worker。当前本机分支的 HTTP 业务无需访问令牌，health 公开且不调用模型；Swagger/OpenAPI 文档也已开放。
+omt 和模块入口均调用 omt.cli.app:main，仅在最外层调用一次 asyncio.run(run_cli())；已有事件循环应 await run_cli()。默认 CLI 先调用 core.model_configuration.check_model_configuration：配置缺失、不完整或无效时仍进入命令循环，提示 /login，不打开 Manager、MCP 或数据库。完成 /login 并补齐默认配置后，通过 core.store.initialize_session_database 显式初始化缺失库，再加载运行环境。已有完整配置的正常启动仍按下述预建库契约校验。自定义工厂绕过初始检查；HTTP 不进行交互初始化。omt-api 指向 omt.api.app:main，默认监听 127.0.0.1:8000，单 worker。当前本机分支的 HTTP 业务无需访问令牌，health 公开且不调用模型；Swagger/OpenAPI 文档也已开放。
 
 HTTP 默认通过 `bootstrap.open_session_manager(options)`；CLI 默认通过 `bootstrap.open_session_runtime(options)`，由 SessionRuntime 持有可替换的 Manager。两者共用配置解析、预建索引校验、提示词、模型与 Agent 组装：
 1. 确认配置工作目录是实际 cwd，且数据库文件和 sessions 表预先存在；不会 chdir、建索引表或迁移。
@@ -64,11 +66,12 @@ CLI 的 SessionRuntime 提供只读 `manager`/`thinking` 和异步 `set_thinking
 
 `run_cli(manager_factory=...)` 可继续注入固定 Manager，此时不读取额外模型配置，不支持切换；也可注入提供 SessionRuntime 的异步工厂。调用方应每次通过 runtime.manager 取得最新实例，不再使用切换前的引用。
 
-SessionSettings 共享 db_path、workspace_path、max_concurrent_runs、skill_roots、mcp_servers。ApiSettings 使用 OMT_API_，当前访问令牌字段可不配置且不校验长度，路由也不执行鉴权；配置令牌不会自动恢复认证。CliSettings 使用 OMT_CLI_，不要求也不读取 HTTP 令牌。两者默认数据库均为 ~/.omt/agent/state/omt.sqlite。当前 CliSettings 和 ApiSettings 均显式将 skill_roots 默认为 ~/.agents/skills；只有使用共用 SessionSettings 且保留 skill_roots=None 时，bootstrap 才回退到 ~/.omt/agent/skills 与 cwd/skills。CLI 为兼容保留既有 knowledge stdio 本机配置，可用 OMT_CLI_MCP_SERVERS={} 禁用或替换；API 默认 MCP 为空，不继承 CLI 的本机路径。模型的三份 JSON 配置仍由 settings.py 读取，与这些启动选项不同。
+SessionSettings 共享 db_path、workspace_path、max_concurrent_runs、skill_roots、mcp_servers。ApiSettings 使用 OMT_API_，当前访问令牌字段可不配置且不校验长度，路由也不执行鉴权；配置令牌不会自动恢复认证。CliSettings 使用 OMT_CLI_，不要求也不读取 HTTP 令牌。两者默认数据库均为 ~/.omt/agent/state/omt.sqlite。当前 CliSettings 和 ApiSettings 均显式将 skill_roots 默认为 ~/.agents/skills；只有使用共用 SessionSettings 且保留 skill_roots=None 时，bootstrap 才回退到 ~/.omt/agent/skills 与 cwd/skills。CLI/API 默认 MCP 均为空；不再内置开发者本机 knowledge 路径，需要的部署通过各自的 MCP_SERVERS 环境变量显式配置。模型的三份 JSON 配置仍由 settings.py 读取，与这些启动选项不同。
 
 ### CLI 交互
 
 - PromptSession 异步读取；校验与 Manager 共用 validate_message：1～32000 字符，非全空白、无 NUL，保留合法输入原文。
+- /login 随时列出已注册厂商并收集 API 参数，由 core 保存。无模型时普通输入和其他业务命令仅提示登录；登录命令不登记会话、不提交模型。运行中添加模型不自动替换 Manager。
 - /exit、/quit、EOF 退出；命令支持首尾空白及大小写混合。resume 是 /resume 的别名；resume-help 等不同词仍是普通消息。
 - 首条普通请求才调用 Manager.create_session，以原文前 10 字符为标题。仅看列表、退出或输入 Ctrl-C 不登记空会话。登记失败不执行模型，下一次输入可重试；首轮开始后即使失败/取消也保留索引。
 - /resume 调用 Manager.list_sessions，只显示当前工作目录的记录。0 固定为当前选择；尚未登记时显示“新对话”和启动 UTC 时间。其他编号沿用 Store 修改时间排序，标题折为单行。
@@ -97,6 +100,12 @@ HTTP 显式创建即登记，允许空会话；历史响应只投影用户/助�
 ~/.omt/agent/auth.json
 ~/.omt/agent/model-store.json
 ```
+
+模型登录分三层：`cli/login.py` 只收集 provider、model_name、api_key、base_url 和确认；`core/model_configuration.py` 提供 ProviderConnection/ModelLogin、check_model_configuration、discover_models、save_model_login；`ai/models_manager.py` 的单一注册表将厂商映射到 ModelProvider(initialize, list_models)，具体目录请求在 `ai/models/<厂商>.py`。新增厂商实现两种能力并添加一条注册项，不修改 CLI/core 的厂商分支。注册表值从单个初始化函数调整为上述适配对象，models_provider 的调用接口保持不变。
+
+登录只补齐缺失/null/空白的默认厂商和模型，保留已有默认选择/思考等级。auth 按厂商共用一个 Key，重复登录更新该厂商凭据；model-store 只保存提交的模型，同 ID 更新用户输入的 URL，保留思考映射与额外元数据。目录查询可选、需要明确授权，发送到用户输入的 base_url，不回退到官网；不推断模型能力。损坏 JSON、非法字段和已有非 API 认证拒绝覆盖。
+
+CLI 的 Key 输入临时使用 DummyHistory，结束/取消后清空缓冲并恢复显示；登录期间暂停普通消息校验，退出后恢复。每份变更 JSON 用 0600 临时文件原子替换，跨文件没有事务和跨进程锁；确认前取消不落盘，I/O 失败后可能需重新 /login。core 的读取器仍严格只读；数据库初始化由 store 的显式函数承担，不隐式放进配置保存、查询或 bootstrap。运行中 /login 只持久化，不自动切换当前 Model 或 Manager；首次登录才启动尚未创建的运行环境，输入状态和会话历史不因添加模型而重置。
 
 仓库内同名的 `agent/` 文件不是当前默认配置来源。切换工作目录或在导入后修改 HOME，不会自动重定位已计算的 `settings.root`。
 

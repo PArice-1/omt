@@ -1,10 +1,42 @@
-"""会话索引存储：读写预先创建的 sessions 表，不管理 LangGraph 检查点。"""
+"""会话索引存储及显式的缺失库初始化；读写操作不隐式建表，不管理检查点。"""
 
+import os
+import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
+
+
+def initialize_session_database(db_path: Path) -> None:
+    """显式初始化缺失数据库，供首次登录成功后调用；不修改已有文件或执行迁移。
+
+    db_path 是调用方选定的会话库路径，可包含尚不存在的父目录；SessionStore 的
+    查询/写入方法不会隐式调用本函数。文件已存在（即使无 sessions 表）时不处理。
+    """
+    path = db_path.expanduser().resolve()
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return
+    os.close(fd)
+    with closing(sqlite3.connect(path)) as connection:
+        _ = connection.executescript("""
+            CREATE TABLE sessions (
+                thread_id TEXT PRIMARY KEY NOT NULL,
+                workspace_path TEXT NOT NULL,
+                title TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX idx_sessions_workspace ON sessions(workspace_path, updated_at);
+        """)
+        connection.commit()
 
 
 @dataclass(frozen=True)

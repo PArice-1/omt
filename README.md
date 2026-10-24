@@ -43,13 +43,24 @@ CLI 与 API 共用以下三个文件，默认从用户目录读取，而不是�
     └── omt.sqlite
 ```
 
-先创建配置目录：
+直接运行 `uv run omt`。CLI 会先检查模型配置；默认模型、认证或模型目录不完整时，仍进入输入循环并提示使用 `/login`，不会自动启动配置向导或发送模型请求。
 
-```bash
-mkdir -p "$HOME/.omt/agent"
+```text
+You> /login
+支持的厂商：deepseek
+provider> deepseek
+base_url> https://api.deepseek.com
+api_key> （隐藏输入）
+使用此地址和 Key 获取厂商模型列表？[y/N]> n
+model_name> 你的模型 ID
+确认保存？[y/N]> y
 ```
 
-按下面示例创建或编辑文件；如已有配置，请合并修改，不要直接覆盖。
+`/login` 可以随时使用。CLI 只收集输入，core 校验并生成/合并三份 JSON；缺失的默认厂商和模型会补齐，已有默认选择不会被覆盖。首次完成登录后创建缺失数据库，即可在同一 CLI 中发消息。运行中再登录只保存配置，不自动切换当前模型或丢失会话。
+
+同厂商共用一个 API Key，再次登录会更新该厂商凭据；同模型 ID 会更新为输入的 `base_url`，保留已有思考映射和额外目录元数据。模型列表查询可选，默认不联网；查询使用用户输入的地址，不强制请求官网。`model-store.json` 只保存提交的模型，不自动推断能力。取消/EOF 在确认前不落盘，损坏配置不自动覆盖。
+
+以下是**手动配置**的格式参考；使用 `/login` 时无需自行创建。手动编辑前先创建 `~/.omt/agent`，已有文件请合并修改，不要直接覆盖。
 
 **`~/.omt/agent/settings.json`**：选择提供商和模型。
 
@@ -99,7 +110,7 @@ chmod 600 "$HOME/.omt/agent/auth.json"
 
 ### 3. 初始化会话数据库
 
-当前入口**不会自动创建会话索引表或执行迁移**。首次使用时，在终端执行下面的初始化脚本：
+未加载模型的 CLI 在 `/login` 保存并补齐默认配置后，会创建**缺失的**数据库和索引表，再初始化运行环境；已存在的数据库不修复、不迁移。已有完整模型配置的正常启动仍要求预建数据库。若使用手动配置方式，或已有空库缺少索引表，可按需执行下面的初始化脚本：
 
 ```bash
 uv run python - <<'PY'
@@ -129,8 +140,7 @@ PY
 ### 4. 启动 CLI
 
 ```bash
-# 当前 CLI 默认保留了开发者本机的 MCP 连接，首次使用请显式关闭。
-export OMT_CLI_MCP_SERVERS='{}'
+# 默认不启动 MCP；缺少模型配置时提示 /login，仍可正常退出。
 uv run omt
 ```
 
@@ -146,6 +156,7 @@ uv run omt
 
 | 命令 | 作用 |
 | --- | --- |
+| `/login` | 列出支持的厂商并输入模型名、API Key 和 base_url，交给 core 保存 |
 | `/resume` | 列出当前工作目录下的会话；`0` 表示当前选择 |
 | `/resume N` | 使用最近一次列表中的编号恢复会话 |
 | `/exit` 或 `/quit` | 退出 |
@@ -159,7 +170,7 @@ uv run omt
 uv run --project /absolute/path/to/OMT omt
 ```
 
-上面的 MCP 环境变量需要在该终端中保持生效。更多交互与失败处理约定见 [CLI 使用说明](docs/cli.md)。
+如需 MCP，请显式设置 `OMT_CLI_MCP_SERVERS`，不再内置开发者本机路径。更多交互与失败处理约定见 [CLI 使用说明](docs/cli.md)。
 
 ## HTTP API
 
@@ -199,7 +210,7 @@ curl -sS "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/runs" \
 
 | 后缀 | 用途 |
 | --- | --- |
-| `DB_PATH` | SQLite 文件路径；默认 `~/.omt/agent/state/omt.sqlite`，需预建 |
+| `DB_PATH` | SQLite 文件路径；默认 `~/.omt/agent/state/omt.sqlite`，首次 `/login` 补齐配置后可初始化；API 仍要求预建 |
 | `WORKSPACE_PATH` | 工作目录声明，必须与启动时实际 cwd 一致；不会切换目录 |
 | `MAX_CONCURRENT_RUNS` | 同一 Manager 的运行上限，默认 `1`，不是工具并发数 |
 | `SKILL_ROOTS` | Skills 搜索路径的 JSON 数组；`[]` 关闭发现 |

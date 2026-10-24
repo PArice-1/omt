@@ -4,8 +4,8 @@ CLI 与 [HTTP](api.md) 是平级入口，共用 SessionManager 和依赖组装�
 
 ## 启动
 
-1. `uv sync` 安装依赖，并按[模型配置说明](architecture.md#3-模型连接与配置)准备模型设置、认证与模型目录。
-2. 预先创建 SQLite 数据库及 `sessions` 表，结构见[索引说明](tests/store.md#接口和预建表约定)；入口不自动建表或迁移。
+1. `uv sync` 安装依赖，运行 `uv run omt`。启动通过 core 检查配置；默认厂商/模型、API 凭据或目录项不完整时，提示 `/login`，但仍进入 CLI，不自动索取参数。
+2. 在 CLI 输入 `/login` 添加模型。无模型时完成登录并补齐默认配置后，显式调用 core 的数据库初始化函数创建缺失库，再加载运行环境；已有数据库不修复、不迁移。完整配置的正常启动仍要求预建库，表结构见[索引说明](tests/store.md#接口和预建表约定)。
 3. 在可信目标目录启动。文件工具和 Bash 基于进程 cwd，工作目录配置不能代替沙箱。
 
 ```bash
@@ -15,7 +15,7 @@ uv run omt
 uv run python -m omt.cli
 ```
 
-Python 同步入口为 `omt.cli.app.main()`；已有事件循环应 `await omt.cli.app.run_cli()`，不能嵌套 asyncio.run。共用核心包已由 `omt.coding_agent` 更名为 `omt.core`，不提供旧包兼容导入；此前的 session/runtime 模块与 `CreateAgentSession` 也已移除。低层会话对象为 `omt.core.conversation.Conversation`，默认不显示过程。
+命令脚本和模块入口均调用 `omt.cli.app.main()`；不再提供 `omt configure` 子命令，配置统一通过 CLI 中的 `/login`。已有事件循环应 `await omt.cli.app.run_cli()`，不能嵌套 asyncio.run。共用核心包已由 `omt.coding_agent` 更名为 `omt.core`，不提供旧包兼容导入；此前的 session/runtime 模块与 `CreateAgentSession` 也已移除。低层会话对象为 `omt.core.conversation.Conversation`，默认不显示过程。
 
 ## 启动配置
 
@@ -27,12 +27,12 @@ CliSettings 使用 `OMT_CLI_` 前缀，与 `OMT_API_` 独立：
 | `WORKSPACE_PATH` | 启动 cwd；规范化后必须等于实际 cwd，不执行 chdir |
 | `MAX_CONCURRENT_RUNS` | `1`；共用 Manager 的 run 容量，不是工具并发数；CLI 本身顺序输入 |
 | `SKILL_ROOTS` | 默认 `["~/.agents/skills"]`（启动时展开为绝对路径）；JSON 数组可替换，`[]` 关闭发现 |
-| `MCP_SERVERS` | 为兼容保留旧 CLI 的 knowledge stdio 配置；JSON 对象可替换，`{}` 关闭 |
+| `MCP_SERVERS` | 默认 `{}`，不启动外部服务；JSON 对象可显式配置 |
 
-现有 knowledge 默认指向本机 `/home/laterain/Projects/Agent/rag-mcp` 的虚拟环境与 `rag_mcp.server`，不是可移植部署配置。其他机器应显式替换或关闭；HTTP 默认不启用它。MCP 字段与类型见 [HTTP 启动配置](api.md#启动配置)，但 CLI 使用自己的环境变量前缀。
+CLI 与 HTTP 均默认不启用 MCP。此前内置的开发者本机 knowledge 路径已移除；需要该服务的部署请显式配置。MCP 字段与类型见 [HTTP 启动配置](api.md#启动配置)，但 CLI 使用自己的环境变量前缀。
 
 ```bash
-# 例如关闭旧 CLI 的本机 MCP；不影响 HTTP 配置。
+# 例如显式关闭 MCP（与默认值相同）；不影响 HTTP 配置。
 export OMT_CLI_MCP_SERVERS='{}'
 export OMT_CLI_DB_PATH="$HOME/.omt/agent/state/omt.sqlite"
 uv run omt
@@ -40,8 +40,26 @@ uv run omt
 
 MCP 命令、环境和 headers 属于可信管理员配置，不应包含仓库中的真实凭据。默认启动会读取用户模型认证，不能把启动 CLI 当作无副作用验证命令。
 
+## /login 模型配置
+
+无模型时仍能输入 `/login`、退出和 EOF；普通请求、/resume、/thinking 只提示先登录，不运行模型或登记会话。已加载模型时同样可 `/login` 添加模型。
+
+1. 展示 core 从注册表取得的厂商列表，当前只有 `deepseek`；用户必须填写 `provider`，而不是由 CLI 默认选中。
+2. 输入 `base_url` 和隐藏的 `api_key`；当前仅支持 API Key。URL 是凭据发送目标，必须是可信 HTTP(S) 地址，不允许夹带认证、查询参数或片段。Key 不进入输入历史；取消时也清空密码缓冲并恢复显示状态。
+3. 可选查询厂商模型列表，默认直接回车或 `n` 不联网。明确输入 `y` 才调用 core → 注册表 → `ai/models/<厂商>.py` 的查询函数。DeepSeek 在输入地址后追加 `/models`（保留 /v1 等前缀），十秒超时、最多 1 MiB、不跟随重定向。查询失败可手动继续。
+4. 输入 `model_name`（提供商精确 ID），最后明确 `y` 确认。CLI 将类型化输入交给 core 保存，不直接读写 JSON。确认前 EOF、拒绝或取消不落盘；普通消息校验器在登录期间暂停，退出后恢复。
+
+core 会创建缺失目录和三份 JSON：auth 按厂商保存 `api_key`；model-store 只新增提交的模型，同 ID 更新 `baseUrl` 而保留思考映射/额外元数据；settings 只补齐缺失/null/空白的默认厂商和模型，不覆盖已有默认选择/思考等级。同厂商所有模型共用一个 Key，再次登录会替换该厂商 Key；已有非 API 认证和损坏配置不自动覆盖。
+
+首次补齐默认配置后，CLI 立即初始化运行环境，可继续发消息。运行中登录不会自动切换模型或重建 Manager，因此会话、历史和失败保护不变；后续模型初始化会读取更新的认证，已有 SessionRuntime 的模型目录仍使用启动快照。添加模型不等同于选择新默认模型；更改已有默认选择或思考映射仍需编辑 JSON。
+
+每份变更 JSON 用权限为 0600 的临时文件原子替换（POSIX），但三份配置和数据库之间没有跨文件事务或跨进程锁。I/O 失败可能已保存部分文件，修复后重新 `/login`，不要并行登录。
+
+模型列表不是完整能力目录，不保证所有远程 ID 均支持工具调用，也不发送聊天请求探测能力。DeepSeek 协议参考 [模型列表接口](https://api-docs.deepseek.com/api/list-models/)。
+
 ## 命令与会话
 
+- `/login`：列出支持的厂商并交互添加 API 模型；不接受行内参数，避免把 Key 放入命令历史。
 - `/exit`、`/quit`、EOF/Ctrl-D：退出，不提交模型。
 - `/resume` 或 `resume`：只列出当前工作目录的会话。0 是当前选择，其他编号按最近修改时间排序；未登记时显示“新对话”。
 - `/resume N` 或 `resume N`：使用最近展示的编号恢复，成功后显示历史，并清空旧编号。再次切换须重新列出；0 无需恢复。
@@ -72,7 +90,7 @@ You> /thinking high
 
 此修改只影响当前 CLI 的所有后续轮次（包括之后恢复的其他会话），不写回 `settings.json`、不修改成功配置缓存、不影响独立 HTTP 进程。模型选择和目录映射使用启动快照，不提供热重载。`none` 是不主动设置思考参数，不承诺关闭提供商默认思考。
 
-嵌入方的 `run_cli(manager_factory=...)` 仍可提供固定 SessionManager；此时不额外读取模型配置，`/thinking` 仅提示未提供可切换的配置。提供 SessionRuntime 的工厂则支持完整功能。
+嵌入方的 `run_cli(manager_factory=...)` 仍可提供固定 SessionManager；自定义工厂绕过启动配置检查，此时不额外读取模型配置（显式 `/login` 除外），`/thinking` 仅提示未提供可切换的配置。提供 SessionRuntime 的工厂则支持完整功能。
 
 ## 失败、取消与边界
 

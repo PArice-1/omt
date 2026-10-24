@@ -9,9 +9,9 @@
 
 ## 接口和预建表约定
 
-调用方先在程序外创建数据库和表，再实例化 SessionStore(db_path)。构造不连接数据库；每个异步方法独立连接，写入提交后关闭连接，无需调用 close。四个方法为 insert_session、get_session、list_sessions、update_session_updated_at；查询返回有明确字段的 SessionRecord，更新时间方法返回提交后的 updated_at 字符串。
+调用方先创建数据库和表，再实例化 SessionStore(db_path)；可以在程序外创建，也可由 CLI 首次 /login 成功后显式调用 core.store.initialize_session_database 初始化缺失数据库（见[模型登录测试](model-login.md)）。构造不连接数据库；每个异步方法独立连接，写入提交后关闭连接，无需调用 close。四个方法为 insert_session、get_session、list_sessions、update_session_updated_at；查询返回有明确字段的 SessionRecord，更新时间方法返回提交后的 updated_at 字符串。
 
-表结构由外部维护，不会在启动或查询时自动初始化、迁移：
+表结构由调用方维护；SessionStore 和 bootstrap 在启动或查询时不会自动初始化、迁移。独立的 initialize_session_database 只初始化缺失数据库，不修复已有文件；SessionStore 本身不隐式调用它。结构为：
 
 ```sql
 CREATE TABLE sessions (
@@ -61,7 +61,7 @@ basedpyright --pythonpath .venv/bin/python src/omt/core/store.py tests/core/test
 ## 覆盖限制
 
 - 本页不验证 CLI 命令、会话切换或 Checkpointer 恢复；/resume 的接入由 [恢复交互测试](resume.md) 验证，Store 本身不负责加载消息。
-- 不负责建库、建表或迁移，不验证已有用户数据库的实际表结构。
+- SessionStore 的读写不负责建库或迁移；显式初始化函数在[模型登录测试](model-login.md)中覆盖缺失库和已有自定义表两条路径，不验证已有用户数据库的实际表结构。
 - 不提供数据库与文件工具副作用之间的事务，也不保证会话索引插入与检查点写入原子提交。
 - 未覆盖多进程争用、数据库损坏、只读权限或磁盘故障；此类数据库异常不被吞掉。
 - resolve 不是目录沙箱；目录移动、Git 根目录归并和跨目录授权不属于本模块功能。

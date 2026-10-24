@@ -8,6 +8,8 @@
 
 原 test_session.py 的模型解析和 Agent 组装用例迁入 test_bootstrap.py，直接测试共用 build_model/build_agent，不再经已删除的 CLI 私有别名。交互、输入、信号与完整组装链路迁入 [CLI 测试](cli.md)，恢复迁入 [/resume 测试](resume.md)。这不是删除旧行为覆盖：低层模型断言保留；旧失败后直接重试契约按 Manager 的保守策略替换。
 
+配置读取器保持严格只读，缺失文件仍报错。显式登录由 core/model_configuration.py 校验并持久化，不再放在 CLI；就绪检查允许缺默认字段并返回未就绪，让 CLI 提示 /login。数据库初始化另由 core/store.py 的显式函数承担，见[模型登录测试](model-login.md)，不在读取器中添加隐式写入。
+
 ## 配置读取场景
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |

@@ -1,0 +1,140 @@
+/* 内容优先：只保留对话、输入和一行状态，不使用仪表盘式工具栏。 */
+Screen {
+    background: $background;
+    align: center top;
+}
+#shell {
+    width: 100%;
+    max-width: 116;
+    height: 100%;
+    padding: 0 2;
+}
+#transcript {
+    height: 1fr;
+    scrollbar-size: 1 1;
+    scrollbar-background: $background;
+    scrollbar-color: $panel;
+}
+#welcome {
+    height: auto;
+    margin: 1 0 2 0;
+    padding: 0 1;
+}
+.chat-message {
+    height: auto;
+    padding: 0 1;
+    margin: 0 0 1 0;
+}
+.user-message {
+    background: $surface;
+    padding: 0 1;
+}
+.message-row { height: auto; }
+.message-row > .message-marker { width: 2; height: 1; color: $primary; text-style: bold; }
+.message-row > Static, .message-row > Markdown { width: 1fr; height: auto; }
+.message-role {
+    height: 1;
+    color: $primary;
+    text-style: bold;
+}
+.user-message .message-marker { color: $text-muted; }
+.chat-message Markdown {
+    padding: 0;
+    margin: 0;
+    background: transparent;
+}
+ToolOutput {
+    height: auto;
+    border: none;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    background: transparent;
+}
+ToolOutput > CollapsibleTitle {
+    color: $text-muted;
+    padding: 0;
+    background: transparent;
+}
+ToolOutput > Contents {
+    padding: 0 0 0 2;
+    background: transparent;
+}
+#dock { height: auto; }
+#activity {
+    display: none;
+    height: 1;
+    margin: 0 0 1 0;
+    color: $text-muted;
+}
+#spinner { width: 4; height: 1; }
+#activity-label { width: 1fr; height: 1; }
+#command-menu {
+    border: round $panel;
+    background: $surface;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    scrollbar-size: 1 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+#command-menu > .option-list--option {
+    padding: 0;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+#command-menu > .option-list--option-highlighted {
+    background: $panel;
+    color: $primary;
+    text-style: none;
+}
+#compose-bar {
+    height: auto;
+    min-height: 3;
+    border-top: solid $panel;
+    border-bottom: solid $panel;
+    padding: 0 1;
+    background: $surface;
+}
+#prompt { width: 3; height: 1; color: $primary; text-style: bold; }
+#composer, #composer:focus {
+    width: 1fr;
+    height: 1;
+    min-height: 1;
+    max-height: 6;
+    padding: 0;
+    border: none;
+    background: $surface;
+    scrollbar-size: 1 1;
+}
+#status-bar {
+    height: 1;
+    margin: 0 0 1 0;
+    color: $text-muted;
+}
+#model-status { width: 1fr; height: 1; padding: 0 1; }
+#key-hint { width: auto; height: 1; padding: 0 1; }
+ModalScreen { align: center middle; background: $background 80%; }
+.dialog {
+    width: 68;
+    max-width: 95%;
+    height: auto;
+    max-height: 90%;
+    padding: 1 2;
+    border: round $panel;
+    background: $surface;
+}
+.dialog-title { text-style: bold; color: $primary; margin-bottom: 1; }
+.dialog-hint { color: $text-muted; }
+.dialog Select, .dialog Input, .dialog Button { margin: 1 0 0 0; }
+.dialog Button {
+    height: 1;
+    min-width: 8;
+    border: none;
+    background: transparent;
+    color: $text-muted;
+    text-style: none;
+}
+.dialog Button:focus { background: $panel; color: $primary; }
+.dialog Button.-primary { color: $primary; }
+#choices { height: 12; max-height: 60%; border: none; background: transparent; }
+#login-status { height: auto; margin-top: 1; color: $text-muted; }

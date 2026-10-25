@@ -11,6 +11,7 @@
 | [Conversation、历史与会话 ID](conversation.md) | [test_conversation.py](../../tests/core/test_conversation.py)、[test_conversation_history.py](../../tests/core/test_conversation_history.py) |
 | [推理强度展示、切换与重建](thinking.md) | [test_thinking.py](../../tests/cli/test_thinking.py) |
 | [模型登录、完整目录与运行中选择](model-login.md) | [test_model_configuration.py](../../tests/core/test_model_configuration.py)、[test_login.py](../../tests/cli/test_login.py) |
+| [Textual TUI 交互与生命周期](tui.md) | [test_tui.py](../../tests/cli/test_tui.py)、[test_tui_input.py](../../tests/cli/test_tui_input.py) |
 | [CLI 入口、终端与生命周期](cli.md) | [test_app.py](../../tests/cli/test_app.py)、[test_terminal.py](../../tests/cli/test_terminal.py)、[test_lifecycle.py](../../tests/cli/test_lifecycle.py) |
 | [HTTP 与会话管理](api.md) | [test_api.py](../../tests/api/test_api.py) |
 | [SQLite 会话索引](store.md) | [test_store.py](../../tests/core/test_store.py) |

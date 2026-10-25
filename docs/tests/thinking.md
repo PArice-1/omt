@@ -35,7 +35,7 @@
 ```bash
 uv run pytest -q tests/cli/test_thinking.py --tb=no
 uv run pytest -q tests/cli tests/core/test_bootstrap.py tests/core/test_settings.py tests/core/test_configuration_files.py --tb=no
-basedpyright --pythonpath .venv/bin/python src/omt/core/bootstrap.py src/omt/core/session_manager.py src/omt/cli/app.py src/omt/cli/commands.py src/omt/cli/terminal.py tests/cli/test_thinking.py
+basedpyright --pythonpath .venv/bin/python src/omt/core/bootstrap.py src/omt/core/session_manager.py src/omt/cli/app.py src/omt/cli/commands.py src/omt/cli/terminal tests/cli/test_thinking.py
 ```
 
 ## 覆盖限制

@@ -51,7 +51,7 @@ def test_cli_exit_does_not_create_empty_session(
     tmp_path: Path, ending: str | BaseException,
 ) -> None:
     reader = feed(monkeypatch, [ending])
-    main()
+    main(["--plain"])
     assert reader.await_count == 1
     assert asyncio.run(SessionStore(cli_db).list_sessions(tmp_path)) == []
 
@@ -61,7 +61,7 @@ def test_cli_multiturn_uses_manager_without_duplicate_output(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
     _ = feed(monkeypatch, ["  第一条输入\n", "第二条", EOFError()])
-    main()
+    main(["--plain"])
     output = capsys.readouterr().out
     assert output.count("第一轮回答") == 1 and output.count("第二轮回答") == 1
     assert "本地系统提示词" not in output
@@ -90,7 +90,7 @@ def test_cli_registration_failure_can_retry_without_executing_first_input(
         await original(self, thread_id, workspace_path, title)
     monkeypatch.setattr(SessionStore, "insert_session", insert)
     _ = feed(monkeypatch, ["不要执行", "重新登记", "/exit"])
-    main()
+    main(["--plain"])
     records = asyncio.run(SessionStore(cli_db).list_sessions(tmp_path))
     assert len(records) == 1 and records[0].title == "重新登记"
     assert "本轮尚未执行" in capsys.readouterr().out

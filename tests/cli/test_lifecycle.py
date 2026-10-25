@@ -119,7 +119,7 @@ def test_cli_runs_manager_and_read_tool_without_network(
         module, "read_input", AsyncMock(side_effect=["读取说明", "继续", "/exit"])
     )
 
-    session()
+    session(["--plain"])
 
     output = capsys.readouterr().out
     assert "[工具开始] read" in output
@@ -168,7 +168,7 @@ def test_cli_stops_before_model_when_prompt_loading_fails(
 ) -> None:
     monkeypatch.setattr(bootstrap, "load_system_prompt", Mock(side_effect=error))
     with pytest.raises(type(error)) as raised:
-        session()
+        session(["--plain"])
     assert raised.value is error
     model_factory.assert_not_called()
 
@@ -188,7 +188,7 @@ def test_cli_invalid_database_fails_before_model_and_does_not_create_schema(
         monkeypatch.setenv("OMT_CLI_DB_PATH", str(path))
         expected = FileNotFoundError
     with pytest.raises(expected):
-        session()
+        session(["--plain"])
     model_factory.assert_not_called()
     assert not (tmp_path / "missing").exists()
     with closing(sqlite3.connect(cli_db)) as connection:
@@ -323,7 +323,7 @@ def test_cli_sigint_exits_and_closes_manager(cli_db: Path, tmp_path: Path) -> No
         app.open_manager = factory
         app.read_input = read_input
         app.PromptSession = lambda: None
-        app.main()
+        app.main(["--plain"])
         with closing(sqlite3.connect(CliSettings().db_path)) as connection:
             rows = connection.execute("SELECT workspace_path FROM sessions").fetchall()
         assert rows == [(str(Path.cwd()),)]

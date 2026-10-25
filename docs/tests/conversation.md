@@ -92,7 +92,7 @@ events.py 仅定义 RunEvent 和 EventHandler；Conversation 的 event_handler �
 | 默认静默 | 不传 event_handler 的 Conversation，存在无效 Skill 诊断并执行完整一轮 | 返回回答并保存历史，stdout/stderr 均为空 | test_conversation_is_silent_by_default |
 | 静默恢复 | 内存 Checkpointer 中已完成的会话，load_history(thread_id) | 完整消息成功加载，不打印历史，不执行新模型请求 | test_load_history_can_restore_without_displaying_history |
 
-事件类型见 [events.py](../../src/omt/core/events.py)，渲染见 [terminal.py](../../src/omt/cli/terminal.py)。本组不保证所有并发事件的全局顺序，不验证网络传输。显式输出及异常/取消清理继续由原有用例回归，HTTP 使用 None 的完整链路另见 [HTTP 测试](api.md)。
+事件类型见 [events.py](../../src/omt/core/events.py)，渲染见 [terminal/](../../src/omt/cli/terminal/)。本组不保证所有并发事件的全局顺序，不验证网络传输。显式输出及异常/取消清理继续由原有用例回归，HTTP 使用 None 的完整链路另见 [HTTP 测试](api.md)。
 
 ## 隔离方式
 

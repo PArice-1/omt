@@ -6,7 +6,8 @@ CLI 与非流式 FastAPI 是平级的应用入口，共用 SessionManager、依�
 
 ```text
 omt / python -m omt.cli               omt-api
-  → cli.app.run_cli                    → api.app lifespan + routes
+  → cli.app.main → terminal.tui.OmtApp → api.app lifespan + routes
+    （--plain → cli.app.run_cli）
      输入、命令、当前选择、终端输出          请求校验、JSON 投影（当前免认证）
                \                       /
        bootstrap.open_session_runtime        bootstrap.open_session_manager
@@ -25,11 +26,11 @@ core 是与入口无关的共用核心，不限定于编码场景。核心不导
 
 | 模块 | 职责 | 不承担的工作 |
 | --- | --- | --- |
-| [cli/app.py](../src/omt/cli/app.py) | 交互生命周期、延迟创建首个会话、调用 Manager | 检查点加载、并发和失败保护 |
-| [cli/login.py](../src/omt/cli/login.py) | /login 选择、隐藏首次 Key、厂商登录状态与模型列表展示 | JSON 读写、厂商协议、运行模型切换 |
+| [cli/app.py](../src/omt/cli/app.py) | 默认 TUI / --plain 路由；保留逐行交互生命周期、延迟会话和 Manager 调用 | 检查点加载、并发和失败保护 |
+| [cli/login.py](../src/omt/cli/login.py) | 逐行 /login 选择、隐藏首次 Key、厂商登录状态与模型列表展示 | JSON 读写、厂商协议、运行模型切换 |
 | [core/model_configuration.py](../src/omt/core/model_configuration.py) | 类型化 API 登录、凭据复用、完整目录与缓存、默认选择持久化 | 终端提示、会话编排、聊天请求、数据库初始化 |
-| [cli/commands.py](../src/omt/cli/commands.py) | /resume、退出、编号映射和当前选择 | 模型执行、直接读写 Store |
-| [cli/terminal.py](../src/omt/cli/terminal.py) | 同步/异步输入校验、事件和历史渲染、警告 | 保存历史、HTTP 响应 |
+| [cli/commands.py](../src/omt/cli/commands.py) | 逐行 /resume、退出、编号映射和当前选择 | 模型执行、直接读写 Store |
+| [cli/terminal/](../src/omt/cli/terminal/) | Textual TUI 生命周期、弹窗、控件、completion.py 指令提示；tui.tcss 独立样式，plain.py 保留旧输入/渲染，__init__.py 重导出旧接口 | 配置/历史存储、厂商协议、HTTP 响应 |
 | [api/](../src/omt/api/) | lifespan、请求/响应和稳定错误；当前暂未启用 Bearer 校验 | CLI 命令、会话内部编排 |
 | [core/bootstrap.py](../src/omt/core/bootstrap.py) | 提示词/模型配置和依赖组装；SessionRuntime 持有当前 Manager 并协调模型/推理强度重建 | 输入循环、HTTP 传输 |
 | [core/configuration.py](../src/omt/core/configuration.py) | 共用会话选项、类型化 MCP 连接配置；入口各自继承并指定前缀 | HTTP 令牌、读取模型认证 |
@@ -43,7 +44,7 @@ core 是与入口无关的共用核心，不限定于编码场景。核心不导
 | [core/prompts/](../src/omt/core/prompts/)、[skills.py](../src/omt/core/skills.py) | 包内基础规则、可信目录的 Skill 元数据发现 | 沙箱、自动执行 Skill 脚本 |
 | [tools_manager.py](../src/omt/core/tools_manager.py)、[tools/](../src/omt/core/tools/) | 静态工具注册、文件和 Bash | 权限审批、事务回滚 |
 
-兼容性：核心包由 `omt.coding_agent` 更名为 `omt.core`，不保留旧包的兼容导入；命令 omt、HTTP 路由、JSON 字段、配置环境变量及用户数据目录不变。此前 CLI 拆分已移除旧 session/runtime 模块和 CreateAgentSession；同步入口使用 cli.app.main()，异步入口使用 cli.app.run_cli()，低层会话对象使用 core.conversation.Conversation。load_history() 不自动展示，核心默认静默；需要显示的调用方显式安装 CLI 渲染。
+兼容性：核心包由 `omt.coding_agent` 更名为 `omt.core`，不保留旧包的兼容导入；命令 omt、HTTP 路由、JSON 字段、配置环境变量及用户数据目录不变。此前 CLI 拆分已移除旧 session/runtime 模块和 CreateAgentSession；同步入口使用 cli.app.main()，默认启动 TUI；--plain 和异步 cli.app.run_cli() 保留逐行模式，嵌入 TUI 使用 OmtApp.run_async()，低层会话对象使用 core.conversation.Conversation。load_history() 不自动展示，核心默认静默；需要显示的调用方显式安装 CLI 渲染。
 
 ## 2. 入口与共用组装
 
@@ -54,7 +55,7 @@ uv run python -m omt.cli
 uv run omt-api
 ```
 
-omt 和模块入口均调用 omt.cli.app:main，仅在最外层调用一次 asyncio.run(run_cli())；已有事件循环应 await run_cli()。默认 CLI 先调用 core.model_configuration.check_model_configuration：配置缺失、不完整或无效时仍进入命令循环，提示 /login，不打开 Manager、MCP 或数据库。完成 /login 并补齐默认配置后，通过 core.store.initialize_session_database 显式初始化缺失库，再加载运行环境。已有完整配置的正常启动仍按下述预建库契约校验。自定义工厂绕过初始检查；HTTP 不进行交互初始化。omt-api 指向 omt.api.app:main，默认监听 127.0.0.1:8000，单 worker。当前本机分支的 HTTP 业务无需访问令牌，health 公开且不调用模型；Swagger/OpenAPI 文档也已开放。
+omt 和模块入口均调用 omt.cli.app:main；默认或 --tui 调用 OmtApp.run()，--plain 在最外层调用一次 asyncio.run(run_cli())，不嵌套事件循环。两种界面均先调用 core.model_configuration.check_model_configuration：配置缺失、不完整或无效时仍进入命令循环，提示 /login，不打开 Manager、MCP 或数据库。完成 /login 并补齐默认配置后，通过 core.store.initialize_session_database 显式初始化缺失库，再加载运行环境。已有完整配置的正常启动仍按下述预建库契约校验。自定义工厂绕过初始检查；HTTP 不进行交互初始化。omt-api 指向 omt.api.app:main，默认监听 127.0.0.1:8000，单 worker。当前本机分支的 HTTP 业务无需访问令牌，health 公开且不调用模型；Swagger/OpenAPI 文档也已开放。
 
 HTTP 默认通过 `bootstrap.open_session_manager(options)`；CLI 默认通过 `bootstrap.open_session_runtime(options)`，由 SessionRuntime 持有可替换的 Manager。两者共用配置解析、预建索引校验、提示词、模型与 Agent 组装：
 1. 确认配置工作目录是实际 cwd，且数据库文件和 sessions 表预先存在；不会 chdir、建索引表或迁移。
@@ -64,11 +65,23 @@ HTTP 默认通过 `bootstrap.open_session_manager(options)`；CLI 默认通过 `
 
 CLI 的 SessionRuntime 提供只读 `manager`/`thinking` 和异步 `set_thinking_level(level)`、`set_model(provider, model_name)`。前者按当前模型目录快照解析等级；后者显式重读所选模型定义和认证，保留请求思考等级，缺映射时实际按 none。两者共用重建链：初始化 Model、创建 Agent，再调用旧 Manager.rebuild(agent) 创建继任 Manager；全部成功后才发布新 Manager、设置和目录快照。构建失败/取消保持旧实例及状态；不请求模型试运行，Runtime 自身不写配置。MCP 工具复用启动发现结果，整个生命周期复用同一个 Saver。HTTP 仍使用固定 Manager，不暴露模型/推理强度修改端点。
 
-`run_cli(manager_factory=...)` 可继续注入固定 Manager，此时不读取额外模型配置，不支持切换；也可注入提供 SessionRuntime 的异步工厂。调用方应每次通过 runtime.manager 取得最新实例，不再使用切换前的引用。
+`run_cli(manager_factory=...)` 和 `OmtApp(runtime_factory=...)` 可注入固定 Manager，此时不读取额外模型配置，不支持运行中切换；也可注入提供 SessionRuntime 的异步工厂。调用方应每次通过 runtime.manager 取得最新实例，不再使用切换前的引用。
 
 SessionSettings 共享 db_path、workspace_path、max_concurrent_runs、skill_roots、mcp_servers。ApiSettings 使用 OMT_API_，当前访问令牌字段可不配置且不校验长度，路由也不执行鉴权；配置令牌不会自动恢复认证。CliSettings 使用 OMT_CLI_，不要求也不读取 HTTP 令牌。两者默认数据库均为 ~/.omt/agent/state/omt.sqlite。当前 CliSettings 和 ApiSettings 均显式将 skill_roots 默认为 ~/.agents/skills；只有使用共用 SessionSettings 且保留 skill_roots=None 时，bootstrap 才回退到 ~/.omt/agent/skills 与 cwd/skills。CLI/API 默认 MCP 均为空；不再内置开发者本机 knowledge 路径，需要的部署通过各自的 MCP_SERVERS 环境变量显式配置。模型的三份 JSON 配置仍由 settings.py 读取，与这些启动选项不同。
 
-### CLI 交互
+### 默认 TUI 交互
+
+- `terminal/tui.py` 的 OmtApp 持有当前会话选择、AsyncExitStack 和串行 Textual worker；所有会话/历史/执行仍调用 SessionManager，运行配置仍由 SessionRuntime 维护，不引入第二套核心状态。退出取消并等待 worker，再关闭 Runtime/Manager/Saver。
+- `screens.py` 仅负责厂商/隐藏 Key/模型和通用选择弹窗；登录调用 core 的 prepare/save，不读写 JSON。无配置只提示，不弹向导、不初始化库。选择模型保存后才初始化缺失库并加载 Runtime，第一条普通消息才登记会话。
+- 主视图移除 Header/Footer/工具栏大按钮，以紧凑对话、底部伸缩输入框和单行状态为主；样式放在 `tui.tcss`，使用 Textual 主题及现有组件，不改变 core。
+- F2 登录/换模型，F3 用稳定 ID 选择恢复，F4 推理等级，Ctrl-N 新对话；Enter 发送、Ctrl-J 换行。Esc 优先收起指令提示，否则取消操作或弹窗；Ctrl-Q/Ctrl-C 退出并等待清理。普通输入复用 validate_message；`/help` 提供操作指南。
+- `completion.py` 的命令元数据/筛选及 CommandMenu 只负责提示，Composer 保持编辑焦点，↑↓/Tab/Enter 选择、补全/执行，仍由 OmtApp 调用 core。`/model` 是 TUI 的 `/login` 别名；推理参数只读当前 Runtime.thinking.available_levels，无配置/网络副作用。多行和非法参数不自动改写。
+- Composer 对已接纳普通输入保留最多 50 条内存历史及未发送草稿，不记录命令或密码、不写 SQLite；首/末行方向键回看，其他光标/选择编辑照常。输入框按软换行后的实际高度在 1～6 行间伸缩；收起菜单或尺寸变化不会丢失文本。
+- TUI `/resume` 打开选择面板，不保留逐行的编号或裸词别名；未知斜杠命令提示而非执行。命令兼容差异见[使用说明](cli.md#默认-tui)，不影响 SQLite、JSON 或 Manager 接口。
+- RunEvent 回调只同步投递 Textual Message；UI 异步增量渲染 Markdown/折叠工具输出，不在 core 依赖或调用 Textual。工具屏幕缓冲最多保留末尾 16000 字符，数据库历史不裁剪；向上回看不强制滚到底部。
+- 成功恢复才更新当前选择并重绘历史，过滤系统消息；切换模型保留会话。取消/退出不回滚副作用，失败保护依旧由 Manager 保持；界面安全提示不展示底层异常原文。
+
+### 逐行 CLI 交互（--plain / run_cli）
 
 - PromptSession 异步读取；校验与 Manager 共用 validate_message：1～32000 字符，非全空白、无 NUL，保留合法输入原文。
 - /login 随时列出厂商及登录状态，仅未登录时收集 Key，由 core 复用认证、拉取完整目录并保存所选默认模型。无模型时其他业务输入仅提示登录；命令本身不登记会话、不提交聊天请求。已有 Runtime 时立即切换模型，保留会话和历史；固定 Manager 只保存并提示不能切换。
@@ -101,13 +114,13 @@ HTTP 显式创建即登记，允许空会话；历史响应只投影用户/助�
 ~/.omt/agent/model-store.json
 ```
 
-模型登录分三层：`cli/login.py` 仅展示和选择 provider、模型 ID，未登录时读取隐藏 Key，不收集地址/查询确认/保存确认，也不读写 JSON；`core/model_configuration.py` 用 `is_provider_logged_in` 检查本地认证，`prepare_provider_login` 复用凭据并取得完整目录，`save_model_login` 自动合并配置。厂商地址和查询协议在 `ai/models/<厂商>.py`，注册表项为 `ModelProvider(initialize, list_models, base_url)`；DeepSeek 的默认地址是模块常量 `DEEPSEEK_BASE_URL`。新增厂商定义地址和两种能力后注册，不修改 CLI/core 分支。ModelProvider 另有可选 thinking_level_maps，按精确模型 ID 提供厂商模块维护的官方能力，默认空表，不改变原有调用方式。
+模型登录分三层：`cli/login.py`（逐行）与 `cli/terminal/screens.py`（TUI）仅展示和选择 provider、模型 ID，未登录时读取隐藏 Key，不收集地址/查询确认/保存确认，也不读写 JSON；`core/model_configuration.py` 用 `is_provider_logged_in` 检查本地认证，`prepare_provider_login` 复用凭据并取得完整目录，`save_model_login` 自动合并配置。厂商地址和查询协议在 `ai/models/<厂商>.py`，注册表项为 `ModelProvider(initialize, list_models, base_url)`；DeepSeek 的默认地址是模块常量 `DEEPSEEK_BASE_URL`。新增厂商定义地址和两种能力后注册，不修改 CLI/core 分支。ModelProvider 另有可选 thinking_level_maps，按精确模型 ID 提供厂商模块维护的官方能力，默认空表，不改变原有调用方式。
 
 `/login` 每次自动查询厂商完整列表，未选模型前只读、不落盘。已保存 Key 且未显式替换时，查询失败可使用本地目录；新 Key 或无缓存时获取失败需重试，不再允许随意手填未知 ID。选择支持编号或完整名称。auth 仍按厂商共用一个 Key；已登录选择模型直接复用，不重复索取。model-store 导入全部返回 ID，而非仅所选项；同 ID 使用厂商内置地址，保留思考映射/额外元数据、其他厂商及未返回的旧条目；已知能力由厂商模块补齐缺失/null 的 thinkingLevelMap，已有映射（包括显式空表）不覆盖。当前为 deepseek-flash/deepseek-v4-pro 提供 low/high/max，未知 ID 不推测能力。settings 更新默认厂商/模型，保留思考等级；损坏 JSON、非法字段和已有非 API 认证拒绝覆盖。
 
 Python 接口兼容性：ProviderConnection/ModelLogin 不再接受 base_url；list_provider_models 只接收 provider/api_key；ModelProvider 必须提供 base_url；save_model_login 新增必填的完整 model_names 参数，LoginResult 移除旧 is_default（所选模型始终设为默认）。仓库调用方和测试同步调整；models_provider 初始化接口、三份 JSON 字段及用户数据路径不变，已有配置无需迁移。
 
-CLI 的 Key 输入临时使用 DummyHistory，结束/取消后清空缓冲并恢复显示；登录期间暂停普通消息校验，退出后恢复。每份变更 JSON 用 0600 临时文件原子替换，没有跨文件事务或跨进程锁；模型选择完成前取消不落盘，I/O 失败后可能需重新 /login。core 读取器仍严格只读，数据库初始化由 store 的显式函数承担，不放进配置保存或查询。首次登录启动运行环境，已有 Runtime 时由 cli/app.py 调用 set_model；选择已持久化但切换失败时保留旧运行模型并提示，二者不构成事务。会话选择、历史、检查点和失败保护不因切换而重置。
+逐行 CLI 的 Key 输入临时使用 DummyHistory，结束/取消后清空缓冲并恢复显示；登录期间暂停普通消息校验，退出后恢复。TUI 使用独立密码 Input，不进入聊天输入/历史，获取列表前及弹窗卸载时清空 Key 缓冲。每份变更 JSON 用 0600 临时文件原子替换，没有跨文件事务或跨进程锁；模型选择完成前取消不落盘，I/O 失败后可能需重新 /login。core 读取器仍严格只读，数据库初始化由 store 的显式函数承担，不放进配置保存或查询。首次登录启动运行环境，已有 Runtime 时由对应的逐行/TUI 控制器调用 set_model；选择已持久化但切换失败时保留旧运行模型并提示，二者不构成事务。会话选择、历史、检查点和失败保护不因切换而重置。
 
 仓库内同名的 `agent/` 文件不是当前默认配置来源。切换工作目录或在导入后修改 HOME，不会自动重定位已计算的 `settings.root`。
 
@@ -207,7 +220,7 @@ run()/arun() 只返回最终文本，不把 token、日志或工具进度拼入�
 
 await conversation.load_history(thread_id) 只从当前 Agent 的 Checkpointer 加载根图最新状态，不运行模型/工具、不重新扫描 Skills、不读写索引，也不打印。它复制当前配置、替换 thread_id，并清除 checkpoint_id、checkpoint_ns、checkpoint_map，避免之后从旧具体快照分支。成功才同时替换 messages/config，保留原始消息对象；空白 ID、无状态/消息、待执行节点、非已完成 AI 终态或查询失败均不改变当前状态。取消也传播。调用方须与 run/arun 顺序使用；需要互斥应经 Manager。
 
-CLI 的 terminal.display_history(messages) 独立按历史顺序显示用户、助手、工具请求和结果；过滤系统提示词、artifact 和模型元数据，不重放工具开始/完成通知。工具名缺失用调用 ID，空历史提示暂无内容。字段过滤不等于正文或参数脱敏。
+逐行 CLI 的 terminal.display_history(messages) 与 TUI 的历史控件独立按历史顺序显示用户、助手、工具请求和结果；过滤系统提示词、artifact 和模型元数据，不重放工具开始/完成通知。工具名缺失用调用 ID，空历史提示暂无内容。字段过滤不等于正文或参数脱敏。
 
 ### 索引与检查点
 
@@ -234,7 +247,7 @@ SessionRecord 包含 thread_id、workspace_path、title、created_at、updated_a
 | `stream.output` / `await stream.output()` | 同步属性 / 异步方法；最终状态字典，`["messages"]` 含此次输入历史与执行产生的完整消息 |
 | `context=` | 运行上下文；不是自动发送给模型的对话历史 |
 
-Conversation 通过可选 event_handler 发送 RunEvent（助手文本开始/增量/结束、工具开始/增量/完成/失败、运行失败及 Skills 诊断），默认 None 完全静默。events.py 只定义数据与回调类型；CLI 的 terminal.print_event 渲染终端，历史由 terminal.display_history 单独展示。回调仅限快速同步操作，不支持网络等待或异步背压；事件不是持久化消息，也不是 SSE。Manager 每轮单独绑定回调，不会把 CLI 渲染泄漏到同实例后续 HTTP 操作。
+Conversation 通过可选 event_handler 发送 RunEvent（助手文本开始/增量/结束、工具开始/增量/完成/失败、运行失败及 Skills 诊断），默认 None 完全静默。events.py 只定义数据与回调类型；逐行 CLI 的 terminal.print_event 渲染终端，历史由 terminal.display_history 单独展示；TUI 的同步回调只投递 StreamEvent，再由 UI 消息处理器渲染。回调仅限快速同步操作，不支持网络等待或异步背压；事件不是持久化消息，也不是 SSE。Manager 每轮单独绑定回调，不会把 CLI 渲染泄漏到同实例后续 HTTP 操作。
 
 Conversation 同步路径用 `interleave("messages", "tool_calls")` 同时订阅模型和工具通道。当前依赖的异步流没有 `interleave()`，异步路径先订阅两个通道，再通过两个消费任务并行读取；完成后检查原始异常，退出前取消并等待未完成的消费任务，再关闭流。两种路径都显示助手文本、工具参数、工具增量、最终结果和错误，工具终态展示规则共用。不要先耗尽一个通道，再期望未订阅的另一个通道回放全过程。
 
@@ -277,7 +290,7 @@ Bash 返回 exit_code、stdout、stderr、timed_out、truncated。非零退出�
 
 | 变更目标 | 优先修改 | 回归依据 |
 | --- | --- | --- |
-| 输入、退出、命令和终端展示 | cli/app.py、commands.py、terminal.py | [CLI 测试](tests/cli.md)、[/resume 测试](tests/resume.md) |
+| 输入、退出、命令和终端展示 | cli/app.py、commands.py、terminal/ | [TUI 测试](tests/tui.md)、[逐行 CLI 测试](tests/cli.md)、[/resume 测试](tests/resume.md) |
 | 共用资源组装和配置 | bootstrap.py、configuration.py；入口各自 settings.py | [配置与组装测试](tests/session-and-config.md)、CLI/HTTP 测试 |
 | 会话加载、互斥、失败与关闭 | session_manager.py | [HTTP/Manager 测试](tests/api.md)、CLI 测试 |
 | 历史、返回文本和过程事件 | conversation.py、events.py | [Conversation 测试](tests/conversation.md) |

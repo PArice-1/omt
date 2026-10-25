@@ -1,9 +1,10 @@
 """交互式 CLI 入口：负责输入、命令与展示，会话操作全部交给 Manager。"""
 
+import argparse
 import asyncio
 import sqlite3
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from pathlib import Path
 
@@ -124,10 +125,26 @@ async def run_cli(
                 print_warnings(result.warnings)
 
 
-def main() -> None:
-    """同步脚本入口，仅在最外层创建一次事件循环。"""
+class _ModeArguments(argparse.Namespace):
+    """为 argparse 的两种界面开关保留具体类型，避免把入口参数扩成 Any。"""
+
+    plain: bool = False
+    tui: bool = False
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """默认运行 Textual TUI；--plain 保留逐行 CLI，argv=None 使用进程参数。"""
+    parser = argparse.ArgumentParser(description="OMT 终端助手（默认 TUI）")
+    modes = parser.add_mutually_exclusive_group()
+    _ = modes.add_argument("--plain", action="store_true", help="使用旧的逐行终端界面")
+    _ = modes.add_argument("--tui", action="store_true", help="使用全屏 TUI（默认）")
+    arguments = parser.parse_args(argv, namespace=_ModeArguments())
     warnings.filterwarnings("ignore", message=r"The v3 streaming protocol on Pregel is experimental\.")
     try:
-        asyncio.run(run_cli())
+        if arguments.plain:
+            asyncio.run(run_cli())
+        else:
+            from .terminal.tui import OmtApp
+            OmtApp().run()
     except KeyboardInterrupt:
         print("\n会话结束。")

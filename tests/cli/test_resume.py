@@ -16,10 +16,15 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from omt.agent.agent import Agent
-from omt.cli.app import main as session
+from omt.cli.app import main
 from omt.cli.settings import CliSettings
 from omt.core.session_manager import SessionManager
 from omt.core.store import SessionRecord, SessionStore
+
+
+def session() -> None:
+    """本组验证逐行模式的编号交互；TUI 选择面板由 test_tui.py 独立验证。"""
+    main(["--plain"])
 
 
 @pytest.fixture

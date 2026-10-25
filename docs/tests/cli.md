@@ -2,20 +2,22 @@
 
 ## 对象与目的
 
-源码：[app.py](../../src/omt/cli/app.py)、[terminal.py](../../src/omt/cli/terminal.py)、[settings.py](../../src/omt/cli/settings.py)，共同使用 [SessionManager](../../src/omt/core/session_manager.py) 和 [bootstrap](../../src/omt/core/bootstrap.py)。
+源码：[app.py](../../src/omt/cli/app.py)、[terminal/plain.py](../../src/omt/cli/terminal/plain.py)、[settings.py](../../src/omt/cli/settings.py)，共同使用 [SessionManager](../../src/omt/core/session_manager.py) 和 [bootstrap](../../src/omt/core/bootstrap.py)。
 
 测试：[test_app.py](../../tests/cli/test_app.py)、[test_terminal.py](../../tests/cli/test_terminal.py)、[test_lifecycle.py](../../tests/cli/test_lifecycle.py)。命令选择与恢复另见 [/resume 测试](resume.md)；推理强度展示/切换、重建与失败保护见[推理强度测试](thinking.md)；底层模型解析另见[配置与组装测试](session-and-config.md)。
 
 防止迁出旧 session/runtime 模块后出现空索引、CLI 绕过 Manager、重复打印、历史丢失，以及取消导致工具/SQLite 资源泄漏。旧 test_session.py 被按职责拆分，不再模拟已删除的 Runtime 工厂或 CLI 私有函数；尽量改用真实 Manager、图和检查点验证结果。
+
+本页主要验证保留的逐行模式。原来同步调用 `main()` 的测试及真实 SIGINT 子进程现在显式传 `main(["--plain"])`，防止默认改为全屏后误进用户终端；业务断言不变。默认 TUI、真实 Textual 组件、键鼠/小尺寸/取消退出由独立的 [TUI 测试](tui.md) 验证。终端专项 monkeypatch 改为实际实现模块 `omt.cli.terminal.plain`，旧函数仍由 `omt.cli.terminal` 重导出。
 
 ## 入口与配置场景
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
 | 不创建空记录 | /exit、/quit、大写与首尾空白、EOF、输入 KeyboardInterrupt | 输出结束；没有索引，不发送退出文本给模型 | test_cli_exit_does_not_create_empty_session |
-| 多轮执行与展示 | 两轮普通输入再 EOF，真实 Manager + SQLite + 假模型 | 索引仅一条、目录正确、标题为首条前 10 字符；每个回答输出一次、系统规则不打印，重新打开 Saver 能读回两轮原文与回答 | test_cli_persists_multiple_turns_and_prints_each_answer_once |
-| 登记失败重试 | 首次 insert_session 抛 SQLite 错误，后续恢复真实写入 | 首次提示本轮未执行，失败输入不进入检查点；第二次输入登记一条并执行成功 | test_cli_retries_registration_without_executing_failed_input |
-| 前缀独立 | 设置 OMT_API_ 的不同数据库和假令牌，同时设置 OMT_CLI_ 数据库 | CliSettings 只使用 CLI 路径，不含 access_token | test_cli_settings_do_not_inherit_http_token_or_prefix |
+| 多轮执行与展示 | 两轮普通输入再 EOF，真实 Manager + SQLite + 假模型 | 索引仅一条、目录正确、标题为首条前 10 字符；每个回答输出一次、系统规则不打印，重新打开 Saver 能读回两轮原文与回答 | test_cli_multiturn_uses_manager_without_duplicate_output |
+| 登记失败重试 | 首次 insert_session 抛 SQLite 错误，后续恢复真实写入 | 首次提示本轮未执行，失败输入不进入检查点；第二次输入登记一条并执行成功 | test_cli_registration_failure_can_retry_without_executing_first_input |
+| 前缀独立 | 设置 OMT_API_MAX_CONCURRENT_RUNS=8、OMT_CLI_MAX_CONCURRENT_RUNS=2 | CLI 并发上限为 2、MCP 为空，不含 access_token | test_cli_and_api_configuration_are_independent |
 | 可移植 MCP 默认值 | 未配置 CLI MCP，再显式配置本地服务 | 默认无 MCP，不依赖开发者本机路径；显式 stdio 配置仍可解析，不连接服务器 | test_cli_mcp_is_disabled_by_default_and_explicit_servers_are_supported |
 | 临时 Skills 隔离 | 共享 fixture 生效后构造 CliSettings | skill_roots 精确等于 tmp_path/skills，不落回真实用户目录；只解析设置，不扫描文件 | test_cli_fixture_uses_only_temporary_skill_roots |
 | Skills 配置选择 | default 删除 CLI 覆盖；custom 设置相对目录；disabled 设置 []；另设置 API 的无关目录 | 分别得到 ~/.agents/skills、当前临时目录下的 custom-skills、空列表；API 前缀不影响 CLI，默认目录只解析不扫描 | test_cli_skill_roots_use_user_default_or_explicit_configuration |

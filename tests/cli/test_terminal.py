@@ -75,7 +75,7 @@ def test_prompt_propagates_cancel_and_eof(
 def test_get_user_input_can_create_its_own_prompt_session(
     monkeypatch: pytest.MonkeyPatch, asynchronous: bool,
 ) -> None:
-    module = import_module("omt.cli.terminal")
+    module = import_module("omt.cli.terminal.plain")
     with create_pipe_input() as pipe:
         terminal = PromptSession[str](input=pipe, output=DummyOutput())
         factory = Mock(return_value=terminal)

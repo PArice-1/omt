@@ -1,10 +1,10 @@
-# 交互式 CLI
+# 交互式 CLI 与 TUI
 
 CLI 与 [HTTP](api.md) 是平级入口，共用 SessionManager 和依赖组装。CLI 不启动 HTTP 服务，也不要求 HTTP 访问令牌。
 
 ## 启动
 
-1. `uv sync` 安装依赖，运行 `uv run omt`。启动通过 core 检查配置；默认厂商/模型、API 凭据或目录项不完整时，提示 `/login`，但仍进入 CLI，不自动索取参数。
+1. `uv sync` 安装依赖，运行 `uv run omt`，默认进入 Textual 全屏界面；`uv run omt --plain` 保留逐行界面。启动通过 core 检查配置；默认厂商/模型、API 凭据或目录项不完整时，提示 F2 / `/login`，不会自动弹出向导或索取参数。
 2. 在 CLI 输入 `/login` 添加模型。无模型时完成登录并补齐默认配置后，显式调用 core 的数据库初始化函数创建缺失库，再加载运行环境；已有数据库不修复、不迁移。完整配置的正常启动仍要求预建库，表结构见[索引说明](tests/store.md#接口和预建表约定)。
 3. 在可信目标目录启动。文件工具和 Bash 基于进程 cwd，工作目录配置不能代替沙箱。
 
@@ -15,7 +15,42 @@ uv run omt
 uv run python -m omt.cli
 ```
 
-命令脚本和模块入口均调用 `omt.cli.app.main()`；不再提供 `omt configure` 子命令，配置统一通过 CLI 中的 `/login`。已有事件循环应 `await omt.cli.app.run_cli()`，不能嵌套 asyncio.run。共用核心包已由 `omt.coding_agent` 更名为 `omt.core`，不提供旧包兼容导入；此前的 session/runtime 模块与 `CreateAgentSession` 也已移除。低层会话对象为 `omt.core.conversation.Conversation`，默认不显示过程。
+命令脚本和模块入口均调用 `omt.cli.app.main()`；无参数或 `--tui` 启动 TUI，互斥的 `--plain` 使用原逐行模式。不再提供 `omt configure` 子命令。已有事件循环中，逐行模式用 `await omt.cli.app.run_cli()`，TUI 用 `await omt.cli.terminal.tui.OmtApp().run_async()`，不能嵌套 asyncio.run。共用核心包已由 `omt.coding_agent` 更名为 `omt.core`，不提供旧包兼容导入；此前的 session/runtime 模块与 `CreateAgentSession` 也已移除。低层会话对象为 `omt.core.conversation.Conversation`，默认不显示过程。
+
+## 默认 TUI
+
+采用 coding-agent 风格的内容优先布局：暖色点缀、紧凑的 `›` 用户输入 / `●` 助手输出、折叠工具记录、底部输入框及单行模型状态。不再放置顶部工具栏、大按钮或厚重消息边框；仍使用 Textual 全屏界面，不声称复刻其他客户端的终端滚动机制。输入 `/` 即可发现命令，`/help` 查看全部操作。
+
+下面是用真实组件生成的**离线示例**，文字和工具输出是演示数据，未请求模型：
+
+![对话布局](images/tui-chat.svg)
+
+![斜杠指令提示](images/tui-commands.svg)
+
+| 操作 | 快捷键 / 方式 |
+| --- | --- |
+| 发送 | Enter；不占用额外发送按钮 |
+| 输入换行 | Ctrl-J |
+| 登录 / 换模型 | F2、`/login` 或 `/model`；分步显示厂商、首次隐藏 Key、模型列表；已登录不再展示密码输入 |
+| 恢复会话 | F3 或 `/resume`；上下键/鼠标选择、Enter 确定，绑定稳定会话 ID，不使用逐行编号 |
+| 推理等级 | F4 或 `/thinking`；也可输入 `/thinking ` 查看当前模型支持的参数提示，仅影响当前进程 |
+| 新对话 | Ctrl-N 或 `/new`；清空当前显示和选择，下一次发消息才创建索引 |
+| 指令补全 | `/` 打开并随前缀筛选，↑↓ 选择，Tab 仅补全文字，Enter 执行选中命令；也可鼠标点击 |
+| 输入历史 | 在首行 ↑ / 末行 ↓ 回看已发送输入并恢复未发送草稿；多行内部和 Shift-↑↓ 保留编辑行为 |
+| 停止当前操作 | Esc；优先收起指令提示而不取消业务；弹窗中取消/返回，Select 展开时先收起选项 |
+| 退出 | Ctrl-Q / Ctrl-C，或输入 `/exit` / `/quit`；弹窗中也可退出 |
+
+TUI 支持 `/login`、`/model`（仅 TUI 的 `/login` 别名）、`/resume`（打开会话选择）、`/thinking [level]`、`/new`、`/help`、`/exit`、`/quit`。**与逐行模式的区别**：不支持 `/resume N` 编号或裸词 `resume`，未知斜杠命令提示用法而非提交给模型；没有 Ctrl-D/EOF 的逐行退出约定。普通消息仍保留合法空白与换行，沿用 core 的 1～32000 字符、非全空白、无 NUL 校验。
+
+输入框默认一行，根据换行及软换行伸缩到最多六行；更长内容在编辑器内滚动。输入历史最多 50 条，仅驻留本进程内存，不持久化、不记录指令或登录 Key，不跨启动恢复。多行粘贴、未知命令或已有非法参数不自动改写补全；推理参数只取当前 Runtime 的真实能力，不猜测固定等级。忙时提交新指令不会清空草稿或打断正在执行的请求。
+
+助手以 Markdown 增量展示，工具默认折叠，点击展开；工具屏幕缓冲仅保留末尾 16000 字符，不改 SQLite 历史。回看上方内容时新输出不会强制跳到末尾。缩小窗口时登录表单可滚动，仍能用 Esc 返回。建议使用至少 80×24 的现代终端。
+
+界面在后台执行配置连接、会话查询/恢复和模型请求；同一时间只处理一个业务操作，避免边生成边切模型。Esc 停止后可操作其他会话/新对话，但失败会话的重跑限制仍由 Manager 保持。Ctrl-Q/Ctrl-C 等待当前操作、Manager 和 Saver 清理后退出；这不保证同步工具或外部进程立即停止，不回滚文件和检查点副作用。启动失败显示安全提示，仍可重新登录；不会打印可能含凭据的底层异常。
+
+未配置时启动、打开/取消登录、查看帮助均不创建配置、数据库或空会话。登录成功后才补建缺失库；首条普通消息前才登记会话。数据库、JSON 格式与逐行模式完全共用，不迁移旧历史，也不自动恢复上次对话。凭据只进入隐藏表单，不进入聊天输入或消息历史；`auth.json` 仍是明文加文件权限保护，不是加密存储。
+
+选型依据见 [GitHub 方案调研](research/tui-frameworks.md)，离线交互证据见 [TUI 测试](tests/tui.md)。
 
 ## 启动配置
 
@@ -40,7 +75,11 @@ uv run omt
 
 MCP 命令、环境和 headers 属于可信管理员配置，不应包含仓库中的真实凭据。默认启动会读取用户模型认证，不能把启动 CLI 当作无副作用验证命令。
 
-## /login 模型配置
+## 逐行模式（--plain）
+
+以下描述保留的 `omt --plain` / `run_cli()` 协议；配置保存、模型重建和会话完整性约束与 TUI 共用。
+
+### /login 模型配置
 
 无模型时仍能输入 `/login`、退出和 EOF；普通请求、/resume、/thinking 只提示先登录，不运行模型或登记会话。已加载模型时同样可 `/login` 添加模型。
 
@@ -57,7 +96,7 @@ CLI 不直接读写 JSON。core 创建缺失目录并合并三份配置：auth �
 
 DeepSeek 模块为已确认的 deepseek-flash/deepseek-v4-pro 提供 low/high/max 映射；旧配置只需重新启动并再次 /login 选择该模型即可补齐，不需要删除认证或重输 Key。/models 只返回 ID，不是完整能力目录；未知 ID 不猜测思考能力，不保证所有远程 ID 支持工具调用，也不发送聊天请求探测能力。DeepSeek 协议参考 [模型列表接口](https://api-docs.deepseek.com/api/list-models/)。
 
-## 命令与会话
+### 命令与会话
 
 - `/login`：选择厂商和模型；首次输入 Key，之后复用认证；自动获取完整目录、保存默认选择并切换运行模型。不接受行内参数，避免把 Key 放入命令历史。
 - `/exit`、`/quit`、EOF/Ctrl-D：退出，不提交模型。
@@ -71,7 +110,7 @@ DeepSeek 模块为已确认的 deepseek-flash/deepseek-v4-pro 提供 low/high/ma
 
 恢复通过 Manager 复查目录归属与完整终态，成功后才切换 CLI 当前 ID。无检查点的已登记会话视为空会话；已有但未完成的检查点不能直接继续。
 
-## 推理强度切换
+### 推理强度切换
 
 默认启动会展示推理状态；可选等级来自所选模型的 `thinkingLevelMap`，排除 null 值，始终包含 `none`。未配置等级、目录缺少对应能力或值为 null 都按 none 处理，并显示实际结果，不再假定默认 media。例如目录 high→max 时：
 
@@ -92,7 +131,7 @@ You> /thinking high
 
 嵌入方的 `run_cli(manager_factory=...)` 仍可提供固定 SessionManager；自定义工厂绕过启动配置检查，此时不额外读取模型配置（显式 `/login` 除外），`/thinking` 仅提示未提供可切换的配置，`/login` 只保存并提示当前入口无法切换。提供 SessionRuntime 的工厂则支持完整功能。
 
-## 失败、取消与边界
+### 失败、取消与边界
 
 - 运行失败/取消可能已经产生工具或检查点副作用。同一 Manager 会阻止该会话直接再次运行或恢复；可选择其他会话，或退出后人工检查。没有自动修复、重置、幂等重试或持久化失败台账。
 - Ctrl-C 在输入或执行阶段均结束整个 CLI，而非取消一轮后继续输入；清理流和 Manager 后关闭 SQLite 连接。嵌入式调用的外部任务取消仍向上传播。

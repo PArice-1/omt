@@ -8,6 +8,8 @@
 
 ## 交互契约与变更
 
+本页保留 `--plain` 的编号和裸词别名协议；测试入口包装显式调用 `main(["--plain"])`，不是放宽或删除原有断言。TUI 改用稳定会话 ID 的选择弹窗，交互证据见 [TUI 测试](tui.md)。
+
 handle_command 返回 run / handled / exit，并只在 Manager.open_session 成功后更新 CliState.current；run_cli 驱动输入、延迟登记和 Manager.run，不直接访问 Store 或 Conversation。
 
 - resume 为 /resume 别名，支持首尾空白与混合大小写；独立词 resume 是保留命令词，无效参数也不会执行模型。resume-help 等仍为普通输入。

@@ -10,6 +10,8 @@
 - [models_manager.py](../../src/omt/ai/models_manager.py)
 - [models/deepseek.py](../../src/omt/ai/models/deepseek.py)
 
+Ollama 原生本地适配的无 Key 初始化、目录、思考选项与真实 SDK 离线协议验证另见 [Ollama 测试](ollama.md)；共用注册表现包含 DeepSeek/Ollama，DeepSeek 旧调用链不变。
+
 测试文件沿用 [test_ai.py](../../tests/ai/test_ai.py) 名称，但实际导入对象是 `omt.ai.model.Model`；不要根据旧名称恢复已移走的 ai.py 模块。
 
 ## 场景
@@ -40,6 +42,7 @@
 | 厂商地址与底层显式覆盖 | 注册表入口不传 URL；底层适配另测带 /proxy/v1/ 的覆盖地址，内存响应含重复/乱序的多个 ID | 默认请求模块定义的官网；底层仍能保留覆盖地址前缀以便测试/代理适配（不在 /login 暴露）。追加 /models，带 Bearer 和十秒超时，完整返回全部去重排序 ID并关闭响应 | test_catalog_uses_provider_default_or_explicit_low_level_prefix |
 | 非法响应 | 空列表、错误 ID 类型、非法 JSON、超过 1 MiB | 安全 ValueError，不显示响应或测试敏感标记，响应关闭 | test_invalid_catalog_response_is_sanitized_and_closed |
 | 网络及读取异常 | HTTPError、URLError 或 IncompleteRead，错误含敏感标记 | 安全错误，不回显详情；存在的 HTTP 响应关闭；安装的 handler 不允许重定向 | test_catalog_errors_hide_details_and_close_http_resources |
+| 云端 Key 要求保留 | 公共目录入口省略 Key 或传入空串/纯空白；DeepSeek HTTP 构建器替身 | 初始化 HTTP 前拒绝，不能因新增本地免 Key 能力而放宽 DeepSeek；注册项默认要求 Key，目录回调只在免认证时收到 None | test_cloud_catalog_still_requires_nonblank_key |
 | 未注册厂商 | unknown provider | 明确拒绝，不访问网络 | test_unregistered_provider_catalog_is_rejected |
 
 注册第二个测试厂商即可完成查询和持久化、不改 core/CLI 的扩展性证据在[模型登录测试](model-login.md)。
@@ -59,5 +62,5 @@ uv run pytest -q tests/ai --tb=no
 ## 覆盖限制
 
 - 不证明真实 DeepSeek 服务接受某个模型名或 effort，也不验证账单、速率限制、网络重试或输出质量。适配参考 [DeepSeek 思考模式协议](https://api-docs.deepseek.com/guides/thinking_mode/)；只有已知支持关闭的模型显式传 none 才构造关闭参数，旧/未知模型仍省略该参数，None 仍沿用服务端配置。
-- 目前只有 DeepSeek 注册项；其他提供商和 OAuth 未覆盖。
+- 本页主要覆盖 DeepSeek；厂商列表回归已更新为 DeepSeek/Ollama 两项，Ollama 专项见独立说明。其他提供商和 OAuth 未覆盖。
 - 会话如何从多个配置文件选择参数，由 [Session 与配置测试](session-and-config.md) 验证。

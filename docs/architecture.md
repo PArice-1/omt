@@ -85,7 +85,7 @@ SessionSettings 共享 db_path、workspace_path、max_concurrent_runs、skill_ro
 ### 逐行 CLI 交互（--plain / run_cli）
 
 - PromptSession 异步读取；校验与 Manager 共用 validate_message：1～32000 字符，非全空白、无 NUL，保留合法输入原文。
-- /login 随时列出厂商及登录状态，仅未登录时收集 Key，由 core 复用认证、拉取完整目录并保存所选默认模型。无模型时其他业务输入仅提示登录；命令本身不登记会话、不提交聊天请求。已有 Runtime 时立即切换模型，保留会话和历史；固定 Manager 只保存并提示不能切换。
+- /login 随时列出厂商及登录状态，仅需认证且未登录时收集 Key，Ollama 显示无需 Key 并直接查询，由 core 复用认证、拉取完整目录并保存所选默认模型。无模型时其他业务输入仅提示登录；命令本身不登记会话、不提交聊天请求。已有 Runtime 时立即切换模型，保留会话和历史；固定 Manager 只保存并提示不能切换。
 - /exit、/quit、EOF 退出；命令支持首尾空白及大小写混合。resume 是 /resume 的别名；resume-help 等不同词仍是普通消息。
 - 首条普通请求才调用 Manager.create_session，以原文前 10 字符为标题。仅看列表、退出或输入 Ctrl-C 不登记空会话。登记失败不执行模型，下一次输入可重试；首轮开始后即使失败/取消也保留索引。
 - /resume 调用 Manager.list_sessions，只显示当前工作目录的记录。0 固定为当前选择；尚未登记时显示“新对话”和启动 UTC 时间。其他编号沿用 Store 修改时间排序，标题折为单行。
@@ -115,9 +115,9 @@ HTTP 显式创建即登记，允许空会话；历史响应投影用户/助手/�
 ~/.omt/agent/model-store.json
 ```
 
-模型登录分三层：`cli/login.py`（逐行）与 `cli/terminal/screens.py`（TUI）仅展示和选择 provider、模型 ID，未登录时读取隐藏 Key，不收集地址/查询确认/保存确认，也不读写 JSON；`core/model_configuration.py` 用 `is_provider_logged_in` 检查本地认证，`prepare_provider_login` 复用凭据并取得完整目录，`save_model_login` 自动合并配置。厂商地址和查询协议在 `ai/models/<厂商>.py`，注册表项为 `ModelProvider(initialize, list_models, base_url)`；DeepSeek 的默认地址是模块常量 `DEEPSEEK_BASE_URL`。新增厂商定义地址和两种能力后注册，不修改 CLI/core 分支。ModelProvider 另有可选 thinking_level_maps，按精确模型 ID 提供厂商模块维护的官方能力，默认空表，不改变原有调用方式。
+模型登录分三层：`cli/login.py`（逐行）与 `cli/terminal/screens.py`（TUI）仅展示和选择 provider、模型 ID，仅需认证且未登录时读取隐藏 Key，不收集地址/查询确认/保存确认，也不读写 JSON；`core/model_configuration.py` 用 `is_provider_logged_in` 检查本地认证，`prepare_provider_login` 复用凭据并取得完整目录，`save_model_login` 自动合并配置。厂商地址和查询协议在 `ai/models/<厂商>.py`，注册表项为 `ModelProvider(initialize, list_models, base_url)`；DeepSeek 的默认地址是模块常量 `DEEPSEEK_BASE_URL`；Ollama 的 `OLLAMA_BASE_URL` 默认 http://localhost:11434，通过原生 /api/tags 查询已下载的完整模型名，不下载模型或推测思考能力。新增厂商定义地址和两种能力后注册，不修改 CLI/core 分支。ModelProvider 另有可选 thinking_level_maps，按精确模型 ID 提供厂商模块维护的官方能力，默认空表；另有 requires_api_key（默认 True），Ollama 显式 False，配置、快捷列表和运行构建共用此要求，不按厂商名硬编码分支。
 
-`/login` 每次自动查询厂商完整列表，未选模型前只读、不落盘。已保存 Key 且未显式替换时，查询失败可使用本地目录；新 Key 或无缓存时获取失败需重试，不再允许随意手填未知 ID。选择支持编号或完整名称。auth 仍按厂商共用一个 Key；已登录选择模型直接复用，不重复索取。model-store 导入全部返回 ID，而非仅所选项；同 ID 使用厂商内置地址，保留思考映射/额外元数据、其他厂商及未返回的旧条目；已知能力由厂商模块补齐缺失/null 的 thinkingLevelMap，已有映射（包括显式空表）不覆盖。当前为 deepseek-flash/deepseek-v4-pro 提供 low/high/max，未知 ID 不推测能力。settings 更新默认厂商/模型，保留思考等级；损坏 JSON、非法字段和已有非 API 认证拒绝覆盖。
+`/login` 每次自动查询厂商完整列表，未选模型前只读、不落盘。认证厂商已保存 Key 且未显式替换时，查询失败可使用本地目录；免 Key 厂商无需凭据即可查询，也可回退已导入缓存；新 Key 或无缓存时获取失败需重试，不再允许随意手填未知 ID。选择支持编号或完整名称。需认证厂商的 auth 仍按厂商共用一个 Key；Ollama 不写 auth.json，兼容输入与旧占位 Key 均不使用，已有认证文件保持原字节；已登录选择模型直接复用，不重复索取。model-store 导入全部返回 ID，而非仅所选项；同 ID 使用厂商内置地址，保留思考映射/额外元数据、其他厂商及未返回的旧条目；已知能力由厂商模块补齐缺失/null 的 thinkingLevelMap，已有映射（包括显式空表）不覆盖。当前为 deepseek-flash/deepseek-v4-pro 提供 low/high/max，未知 ID 不推测能力。settings 更新默认厂商/模型，保留思考等级；损坏 JSON、非法字段和已有非 API 认证拒绝覆盖。
 
 Python 接口兼容性：ProviderConnection/ModelLogin 不再接受 base_url；list_provider_models 只接收 provider/api_key；ModelProvider 必须提供 base_url；save_model_login 新增必填的完整 model_names 参数，LoginResult 移除旧 is_default（所选模型始终设为默认）。仓库调用方和测试同步调整；models_provider 初始化接口、三份 JSON 字段及用户数据路径不变，已有配置无需迁移。
 
@@ -134,8 +134,8 @@ Python 接口兼容性：ProviderConnection/ModelLogin 不再接受 base_url；l
 
 `bootstrap.build_model(settings)` 要求：
 
-1. provider 已存在于 `models_manager.models` 注册表；目前只有 DeepSeek。
-2. `auth.json` 有对应认证，类型是 `api_key`，Key 非空白。
+1. provider 已存在于 `models_manager.models` 注册表；目前为 DeepSeek 和 Ollama。
+2. 仅 requires_api_key=True 时，auth.json 必须有对应 api_key 类型且 Key 非空白；Ollama 不读取该文件，也不需要创建空文件。
 3. 默认模型与该 provider 的 `models[].id` 精确匹配，不猜别名、不取列表第一项。
 4. 模型定义若声明 provider，必须与所选 provider 一致。
 
@@ -166,11 +166,13 @@ Python 接口兼容性：ProviderConnection/ModelLogin 不再接受 base_url；l
 
 该对象放在模型项的 `thinkingLevelMap` 字段中。不要求旧目录补齐映射；省略 `defaultThinkingLevel` 不主动开启思考。缺失能力按 none 处理，但错误 JSON、错误字段类型、空白等级/映射值及连接或认证错误仍报错。
 
-`Model` 构造时立即调用 `_init_model()`，经注册表进入 `deepseek_init()`，最终使用 LangChain SDK 创建可直接调用的聊天模型，而非可配置模型包装器。传给 `Agent` 的是 **`client.model`**，不是 Model 包装对象本身。
+`Model` 构造时立即调用 `_init_model()`，经注册表进入 `deepseek_init()` 或 `ollama_init()`，最终使用 LangChain SDK 创建可直接调用的聊天模型，而非可配置模型包装器。传给 `Agent` 的是 **`client.model`**，不是 Model 包装对象本身。
 
 DeepSeek 适配将有效 `reasoning_effort` 原样传给 SDK，并合并 `extra_body={"thinking": {"type": "enabled"}}`。已知支持关闭推理的 deepseek-flash/deepseek-v4-pro 收到字符串 `"none"` 时，显式下发 reasoning_effort="none" 和 disabled thinking；未传/Python None 则沿用服务端配置。旧/未知 ID 的字符串 none 保留省略参数的兼容行为，不据此保证关闭服务端推理。已有 `extra_body` 的其他字段及 temperature/max_tokens 等选项保留，覆盖 thinking 时不修改调用者字典。规则参考 [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)；离线测试不证明真实服务接受某个 effort。
 
-`baseUrl` 是凭据将被发送到的目标地址，应只使用可信地址。测试不通过读取真实配置验证连接。
+Ollama 适配通过 langchain-ollama 的 ChatOllama 使用原生 /api/chat，不走 OpenAI /v1。底层 ollama_init 和 list_ollama_models 不要求 Key，api_key 仅为共用接口兼容参数，不传给 SDK/目录请求；默认不校验模型，构造时不联网。原生 num_ctx/num_predict/keep_alive 等选项保留；reasoning_effort 的 none/false 映射 reasoning=False，true 映射 True，low/medium/high 原样映射，不接受 max；未传/None 保留原生选项和服务默认值。具体能力由模型决定，注册项不声明统一思考映射。core/CLI/TUI/HTTP 通过 requires_api_key 统一支持免 Key 首次配置、模型切换和重启；ProviderConnection/ModelLogin 的 api_key 改为可选，但认证厂商缺失/null/空白仍校验失败。公共目录回调允许 api_key=None，认证厂商实现仍须拒绝无 Key；list_provider_models 也提前校验并对免 Key 厂商丢弃兼容凭据。HTTP /providers 新增 requires_api_key 字段，logged_in 仍只表示保存了 Key，不将免 Key 虚报为已登录或服务可达；前端应按 requires_api_key && !logged_in 显示密码表单。SDK 自身环境配置和调用方原生 client_kwargs 保持原样。离线协议证据见 [Ollama 测试](tests/ollama.md)。
+
+`baseUrl` 是模型请求及适用凭据的目标地址，应只使用可信地址。测试不通过读取真实配置验证连接。
 
 ## 4. 会话契约与历史
 

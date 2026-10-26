@@ -89,6 +89,27 @@ def test_missing_configuration_enters_cli_and_only_prompts_login_without_writes(
     sdk.assert_not_called()
 
 
+def test_ollama_login_skips_key_and_can_chat_after_restart(
+    catalog: AsyncMock, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    catalog.return_value = ["qwen3:8b"]
+    factory = Mock(return_value=RecordingModel(responses=[AIMessage(content="本地回答")]))
+    monkeypatch.setattr(import_module("omt.ai.models.ollama"), "init_chat_model", factory)
+    terminal = terminal_for(["/login", "ollama", "qwen3:8b", "你好", "/exit"])
+    asyncio.run(run_cli(terminal=terminal))
+    assert settings.load_settings().defaultProvider == "ollama"
+    assert model_configuration.check_model_configuration().ready
+    assert not (settings.root / "agent" / "auth.json").exists()
+    assert "api_key" not in factory.call_args.kwargs
+    assert all("api_key" not in call.args[0] for call in terminal.prompt_async.call_args_list)
+    output = capsys.readouterr().out
+    assert "ollama（无需 API Key）" in output and "本地回答" in output
+    assert len(asyncio.run(SessionStore(CliSettings().db_path).list_sessions(tmp_path))) == 1
+    asyncio.run(run_cli(terminal=terminal_for(["重启后对话", "/exit"])))
+    assert factory.call_count == 2 and "本地回答" in capsys.readouterr().out
+    assert not (settings.root / "agent" / "auth.json").exists()
+
+
 def test_first_login_only_asks_provider_key_and_model_and_saves_full_catalog(
     sdk: Mock, tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:

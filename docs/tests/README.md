@@ -7,6 +7,7 @@
 | 说明 | 对应测试 |
 | --- | --- |
 | [模型初始化](ai-models.md) | [test_ai.py](../../tests/ai/test_ai.py)、[test_models_manager.py](../../tests/ai/test_models_manager.py)、[test_deepseek.py](../../tests/ai/test_deepseek.py)、[test_model_catalog.py](../../tests/ai/test_model_catalog.py) |
+| [Ollama 本地模型适配](ollama.md) | [test_ollama.py](../../tests/ai/test_ollama.py) |
 | [Agent 与同步/异步 v3 流](agent.md) | [test_agent.py](../../tests/test_agent.py)、[test_agent_stream.py](../../tests/test_agent_stream.py)、[test_agent_async.py](../../tests/test_agent_async.py) |
 | [Conversation、历史与会话 ID](conversation.md) | [test_conversation.py](../../tests/core/test_conversation.py)、[test_conversation_history.py](../../tests/core/test_conversation_history.py) |
 | [推理强度展示、切换与重建](thinking.md) | [test_thinking.py](../../tests/cli/test_thinking.py) |

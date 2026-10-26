@@ -47,6 +47,22 @@ def model_factory(monkeypatch: pytest.MonkeyPatch) -> Mock:
     return factory
 
 
+def test_get_ollama_model_without_auth_file(config_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (config_dir / "auth.json").unlink()
+    _ = (config_dir / "model-store.json").write_text(json.dumps({
+        "ollama": {"models": [{"id": "qwen3:8b", "baseUrl": "http://localhost:11434"}]},
+    }), encoding="utf-8")
+    fake = FakeListChatModel(responses=["本地回复"])
+    factory = Mock(return_value=fake)
+    monkeypatch.setattr(import_module("omt.ai.models.ollama"), "init_chat_model", factory)
+    client = _get_model(Settings(defaultProvider="ollama", defaultModel="qwen3:8b"))
+    assert client.model is fake and fake.invoke("输入").content == "本地回复"
+    options = factory.call_args.kwargs
+    assert options["model_provider"] == "ollama" and options["model"] == "qwen3:8b"
+    assert options["reasoning"] is False and "api_key" not in options
+    assert not (config_dir / "auth.json").exists()
+
+
 def test_get_model_joins_settings_auth_and_matching_catalog_entry(config_dir: Path, model_factory: Mock) -> None:
     client = _get_model(load_settings())
 

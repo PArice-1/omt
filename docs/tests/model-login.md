@@ -13,12 +13,17 @@
 
 本次回归补充：此前完整目录仅导入 ID，导致 deepseek-flash 缺少 thinkingLevelMap，只显示 none。现在将厂商模块已确认的能力随目录合并；旧条目缺失/null 时通过再次 /login 补齐，已有自定义映射和显式空表不覆盖。未知 ID 不按名称猜测能力。
 
+本次修复 Ollama 上层仍要求 Key 的回归：认证要求由注册表 requires_api_key 决定，默认 True 保持原云端行为；Ollama 为 False。输入 DTO 的 api_key 可省略，免 Key 厂商丢弃兼容输入、不新建或改写 auth.json，也不读取旧占位 Key；认证厂商仍拒绝缺失或空白 Key。“已登录”语义不扩大为本地服务已就绪。
+
 ## core 场景
 
 下表对应 test_model_configuration.py，经公开类型/函数和配置读取器验证。
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
+| Ollama 首次无 Key 配置 | 无配置；目录替身返回两个已下载的完整名称，prepare 不传 Key，确认选择 qwen3:8b | 预览不落盘；只保存 settings/model-store，不生成 auth；默认配置就绪，全部模型进入快捷目录 | test_ollama_first_configuration_needs_no_key_or_auth_file |
+| 兼容旧占位 Key 与已有认证 | 输入 None/空串/空白/假 Key；已有 DeepSeek Key 与 Ollama 旧 OAuth 字段 | Ollama DTO 归一为 None；保存后 auth 字节不变；Ollama 不虚报已登录，DeepSeek 凭据仍可用 | test_ollama_ignores_keys_and_preserves_existing_auth |
+| 本地查询失败和缓存 | 无缓存或已导入本地模型；目录替身抛假敏感标记，兼容传入旧 Key | 无缓存时安全提示启动服务/下载模型，不索取 Key、不落盘；有缓存时 from_cache=true，连接始终无凭据 | test_ollama_discovery_failure_needs_no_key_and_only_uses_real_cache |
 | 首次完整导入 | 无配置，提交 flash，完整列表含 flash/pro | 三份 JSON 可读回；两个模型均使用厂商模块地址；auth 权限 0600（POSIX）；无目录/聊天请求或数据库副作用；就绪检查和登录状态正确 | test_first_login_saves_entire_catalog_and_provider_url_without_database |
 | 已知模型能力及旧配置修复 | 首次导入或已存在但缺映射的 deepseek-flash；完整列表另含 deepseek-v4-pro、相似未知 ID | 两个已知 ID 导入 low/high/max；未知 ID 不填能力，旧价格等字段保留；重复导入字节不变 | test_login_imports_known_thinking_capabilities_and_repairs_old_entries |
 | 自定义能力保留 | 已知模型已有 null、空表、自定义 high 或 high→null | 仅 null 补齐官方映射；空表和自定义映射保持原值 | test_known_capabilities_only_fill_missing_or_null_mapping |
@@ -32,7 +37,7 @@
 | 非法或不匹配目录 | 空列表、空白 ID 或列表中无所选模型 | 拒绝保存，不生成文件 | test_empty_invalid_or_unselectable_catalog_is_not_saved |
 | 损坏 auth | 非 JSON 或非法认证字段，含敏感标记 | 安全异常及完整 traceback 不含原文，现有文件不覆盖、其他文件不生成 | test_invalid_existing_auth_is_rejected_without_overwrite_or_secret_in_traceback |
 | 输入校验 | 未注册厂商、空 ID/Key，或旧 base_url 参数 | 类型校验拒绝，无文件副作用，错误不回显 Key；登录 DTO 不再接受地址 | test_login_input_validation_hides_secrets_and_no_longer_accepts_url |
-| 厂商扩展 | 临时注册 second，模块地址与本地目录函数 | 按注册的地址查询并保存完整列表/默认选择及注册的能力映射；不初始化聊天，不改 CLI/core | test_new_provider_defines_its_own_address_without_cli_or_core_changes |
+| 厂商扩展 | 临时注册 second，参数化 requires_api_key=True/False，模块地址与本地目录函数 | 认证路径收到假 Key 且写 auth，免 Key 路径收到 None 且不写 auth；两者查询地址、默认选择和能力映射均正确，不初始化聊天，不硬编码 Ollama | test_new_provider_defines_its_own_address_without_cli_or_core_changes |
 | 不兼容配置 | OAuth 或同 ID 声明其他厂商 | 保存前拒绝，文件集合和字节不变 | test_incompatible_existing_configuration_is_not_overwritten |
 | 显式初始化数据库 | 缺失库，或已有仅含自定义表的库 | 缺失时能经真实 SessionStore 查询；已有时字节不变，不迁移 | test_explicit_database_initialization_only_creates_missing_files |
 
@@ -43,6 +48,7 @@
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
 | 无模型启动 | 无配置无库，输入普通消息、/resume、/thinking、/exit | 只提示登录，不初始化 SDK、不生成文件、不执行消息 | test_missing_configuration_enters_cli_and_only_prompts_login_without_writes |
+| Ollama 无 Key 登录与重启 | /login、ollama、完整模型名、普通消息、退出，再重启发送 | 只询问厂商和模型，不出现 api_key 提示；显示无需 API Key；SDK 无 Key，真实 Manager 完成两次启动对话，保存索引且始终无 auth.json | test_ollama_login_skips_key_and_can_chat_after_restart |
 | 首次简化登录后对话 | /LoGiN、厂商、Key、flash、普通消息 | 不问 URL/查询/确认；导入 flash/pro，SDK 收到选择和厂商地址，能立即回答；仅普通消息登记会话，不打印 Key | test_first_login_only_asks_provider_key_and_model_and_saves_full_catalog |
 | Flash 能力导入与 SDK 参数 | 无配置，或启动时已有无映射的 Flash；/login 后依次切换 low/high/max/none | 新旧两种路径均补全完整目录映射，可选等级按 none/low/high/max 排列，不再按字母把 high 放到 low 前；SDK 实际收到 low/high/max/none，none 携带 disabled thinking；不再显示“无有效映射”或旧的省略参数提示 | test_flash_login_imports_levels_and_applies_each_effort |
 | 再次选择模型 | 已登录厂商，输入厂商编号和 pro 编号 | 显示已登录；仅两次输入，不索取 Key；认证字节不变、默认切 pro | test_logged_in_provider_only_asks_model_and_keeps_credentials_unchanged |
@@ -80,6 +86,6 @@ basedpyright --pythonpath .venv/bin/python src/omt/core/model_configuration.py s
 ## 覆盖限制
 
 - 不证明真实服务可达、Key 有效、远程 ID 支持工具调用或某种 effort；second 是测试适配，不代表真实支持该厂商。
-- 仅 API Key、每厂商一份，不实现 OAuth 或自动凭据刷新；本组不覆盖 HTTP 预览/确认端点，另见 [HTTP 运行配置测试](api-runtime-streaming.md)。只读快捷列表的正常、无凭据和厂商过滤见[核心快捷目录测试](reasoning-and-model-choices.md)。“已登录”不验证 Key 有效期，刷新失败使用缓存不保证后续聊天成功。
+- 认证厂商仅支持 API Key、每厂商一份；Ollama 免认证，不实现 OAuth 或自动凭据刷新；本组不覆盖 HTTP 预览/确认端点，另见 [HTTP 运行配置测试](api-runtime-streaming.md)。只读快捷列表的正常、无凭据和厂商过滤见[核心快捷目录测试](reasoning-and-model-choices.md)。“已登录”不验证 Key 有效期，刷新失败使用缓存不保证后续聊天成功。
 - 配置逐文件原子替换，没有跨文件/数据库/Runtime 事务和跨进程锁；不模拟断电、磁盘满或并行登录。选择保存后 Runtime 失败的区别由专门回归覆盖。
 - 显式数据库初始化不修复已有库；0600 仅 POSIX 检查，内存终端不覆盖所有真实 TTY。

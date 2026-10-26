@@ -41,6 +41,58 @@ def document(name: str, value: object) -> Path:
     return path
 
 
+def test_ollama_first_configuration_needs_no_key_or_auth_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    discover = AsyncMock(return_value=["qwen3:8b", "llama3.2:latest"])
+    monkeypatch.setattr(configuration, "discover_models", discover)
+    prepared = asyncio.run(configuration.prepare_provider_login("ollama"))
+    assert prepared.connection.api_key is None and not prepared.from_cache
+    assert not (settings.root / "agent").exists()
+    result = save_model_login(ModelLogin(provider="ollama", model_name="qwen3:8b"),
+                              model_names=prepared.model_names)
+    assert result.provider == "ollama" and check_model_configuration().ready
+    assert settings.load_settings().defaultModel == "qwen3:8b"
+    assert {path.name for path in (settings.root / "agent").iterdir()} == {"settings.json", "model-store.json"}
+    assert [(item.provider, item.model) for item in configuration.list_configured_models()] == [
+        ("ollama", "llama3.2:latest"), ("ollama", "qwen3:8b"),
+    ]
+
+
+@pytest.mark.parametrize("key", [None, "", " ", "test-unused-key"])
+def test_ollama_ignores_keys_and_preserves_existing_auth(key: str | None) -> None:
+    path = document("auth.json", {
+        "deepseek": {"type": "api_key", "key": "test-deepseek-key"},
+        "ollama": {"type": "oauth", "access": "test-old-unused-token"},
+    })
+    before = path.read_bytes()
+    login = ModelLogin(provider="ollama", model_name="local", api_key=SecretStr(key) if key is not None else None)
+    assert login.api_key is None
+    _ = save_model_login(login, model_names=["local"])
+    assert path.read_bytes() == before
+    assert check_model_configuration().ready
+    assert not configuration.is_provider_logged_in("ollama")
+    assert configuration.is_provider_logged_in("deepseek")
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_ollama_discovery_failure_needs_no_key_and_only_uses_real_cache(
+    cached: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if cached:
+        _ = save_model_login(ModelLogin(provider="ollama", model_name="local"), model_names=["local"])
+    discover = AsyncMock(side_effect=ValueError("test-private-marker"))
+    monkeypatch.setattr(configuration, "discover_models", discover)
+    if cached:
+        prepared = asyncio.run(configuration.prepare_provider_login("ollama", SecretStr("ignored-key")))
+        assert prepared.from_cache and prepared.model_names == ("local",)
+        assert prepared.connection.api_key is None
+    else:
+        with pytest.raises(ValueError, match="推理服务已启动") as raised:
+            _ = asyncio.run(configuration.prepare_provider_login("ollama"))
+        assert "test-private-marker" not in str(raised.value) and "API Key" not in str(raised.value)
+        assert not (settings.root / "agent").exists()
+    assert not (settings.root / "agent" / "auth.json").exists()
+
+
 def test_first_login_saves_entire_catalog_and_provider_url_without_database(tmp_path: Path) -> None:
     assert not check_model_configuration().ready
     assert not configuration.is_provider_logged_in("deepseek")
@@ -155,7 +207,7 @@ def test_prepare_reuses_key_fetches_all_models_and_does_not_write(monkeypatch: p
     assert not prepared.from_cache
     connection = discover.call_args.args[0]
     assert isinstance(connection, ProviderConnection)
-    assert connection.api_key.get_secret_value() == "fake-login-key"
+    assert connection.api_key is not None and connection.api_key.get_secret_value() == "fake-login-key"
     assert {path: path.read_bytes() for path in directory.iterdir()} == before
 
 
@@ -210,17 +262,20 @@ def test_login_input_validation_hides_secrets_and_no_longer_accepts_url(change: 
     assert not (settings.root / "agent").exists()
 
 
-def test_new_provider_defines_its_own_address_without_cli_or_core_changes(monkeypatch: pytest.MonkeyPatch) -> None:
-    received: list[tuple[str, str]] = []
+@pytest.mark.parametrize("requires_key", [True, False])
+def test_new_provider_defines_its_own_address_without_cli_or_core_changes(
+    monkeypatch: pytest.MonkeyPatch, requires_key: bool,
+) -> None:
+    received: list[tuple[str | None, str]] = []
 
-    def catalog(*, api_key: SecretStr, base_url: HttpUrl) -> list[str]:
-        received.append((api_key.get_secret_value(), str(base_url)))
+    def catalog(*, api_key: SecretStr | None, base_url: HttpUrl) -> list[str]:
+        received.append((api_key.get_secret_value() if api_key is not None else None, str(base_url)))
         return ["second-flash", "second-pro"]
 
     initializer = Mock(side_effect=AssertionError("配置阶段不初始化聊天模型"))
     monkeypatch.setitem(models_manager.models, "second", models_manager.ModelProvider(
         initialize=initializer, list_models=catalog, base_url=HttpUrl("https://second.test/v1"),
-        thinking_level_maps={"second-pro": {"high": "max"}},
+        thinking_level_maps={"second-pro": {"high": "max"}}, requires_api_key=requires_key,
     ))
     prepared = asyncio.run(configuration.prepare_provider_login("second", SecretStr("fake-login-key")))
     assert prepared.model_names == ("second-flash", "second-pro")
@@ -229,7 +284,8 @@ def test_new_provider_defines_its_own_address_without_cli_or_core_changes(monkey
     assert check_model_configuration().ready
     assert all(str(model.baseUrl) == "https://second.test/v1" for model in settings.load_model_store()["second"].models)
     assert settings.load_model_store()["second"].models[1].thinkingLevelMap == {"high": "max"}
-    assert received == [("fake-login-key", "https://second.test/v1")]
+    assert received == [("fake-login-key" if requires_key else None, "https://second.test/v1")]
+    assert (settings.root / "agent" / "auth.json").exists() is requires_key
     initializer.assert_not_called()
 
 

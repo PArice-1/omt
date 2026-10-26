@@ -30,7 +30,8 @@ def build_model(settings: Settings, *, definition: ModelDefinition | None = None
     settings 中显式的非 none 等级按所选模型的 thinkingLevelMap 映射后传给提供商。
     未配置、null、字符串 "none"、映射缺失或对应值为 null 时解析为 none，
     是否显式关闭推理由厂商适配按模型协议决定。
-    模型选择与认证仍严格校验，不回退到其他模型或环境密钥。
+    模型选择仍严格校验；需认证厂商验证 Key，免 Key 厂商不读取 auth.json，
+    不回退到其他模型或用占位凭据绕过校验。
     definition 可传入已解析的目录快照，以保证展示和初始化使用同一映射；其 ID/provider 必须匹配设置。
     """
     provider = settings.defaultProvider
@@ -38,17 +39,19 @@ def build_model(settings: Settings, *, definition: ModelDefinition | None = None
     if provider not in model_initializers:
         raise ValueError(f"提供商 {provider!r} 未注册模型初始化函数")
 
-    credential = load_auth().get(provider)
-    if credential is None:
-        raise ValueError(f"auth.json 中缺少提供商 {provider!r} 的认证配置")
-    if credential.type != "api_key":
-        raise ValueError(
-            f"提供商 {provider!r} 的认证类型 {credential.type!r} 暂不支持；"
-            "目前仅支持 api_key，其他认证需要提供商专用适配，不能直接当作 API Key"
-        )
-    api_key = credential.key
-    if api_key is None or not api_key.get_secret_value().strip():
-        raise ValueError(f"auth.json 中提供商 {provider!r} 的 API Key 不能为空")
+    api_key = None
+    if model_initializers[provider].requires_api_key:
+        credential = load_auth().get(provider)
+        if credential is None:
+            raise ValueError(f"auth.json 中缺少提供商 {provider!r} 的认证配置")
+        if credential.type != "api_key":
+            raise ValueError(
+                f"提供商 {provider!r} 的认证类型 {credential.type!r} 暂不支持；"
+                "目前仅支持 api_key，其他认证需要提供商专用适配，不能直接当作 API Key"
+            )
+        api_key = credential.key
+        if api_key is None or not api_key.get_secret_value().strip():
+            raise ValueError(f"auth.json 中提供商 {provider!r} 的 API Key 不能为空")
 
     definition = definition if definition is not None else _load_model_definition(settings)
     if definition.id != model_id or (definition.provider is not None and definition.provider != provider):

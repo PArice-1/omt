@@ -9,23 +9,27 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, TypeAdapter, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, TypeAdapter, ValidationError, ValidationInfo, field_validator
 
-from omt.ai.models_manager import list_provider_models, models as model_providers, supported_providers as supported_providers
+from omt.ai.models_manager import (
+    list_provider_models, models as model_providers,
+    provider_requires_api_key as provider_requires_api_key, supported_providers as supported_providers,
+)
 
 from . import settings
 from .settings import AuthCredential, ModelDefinition, NonEmptyString, ProviderModels, Settings
 
 
 class ProviderConnection(BaseModel):
-    """厂商 API 认证；provider 来自注册表，api_key 不能空白。
+    """厂商连接；provider 来自注册表，只有要求认证的厂商才必须提供非空 api_key。
 
+    免 Key 厂商会将兼容输入归一为 None，不存储或复用旧占位凭据。
     地址由 ai/models/ 对应厂商模块维护，不再作为登录参数。
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, hide_input_in_errors=True, extra="forbid")
     provider: NonEmptyString
-    api_key: SecretStr = Field(repr=False)
+    api_key: SecretStr | None = Field(default=None, repr=False, validate_default=True)
 
     @field_validator("provider")
     @classmethod
@@ -36,14 +40,19 @@ class ProviderConnection(BaseModel):
 
     @field_validator("api_key")
     @classmethod
-    def _nonblank_key(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
+    def _nonblank_key(cls, value: SecretStr | None, info: ValidationInfo) -> SecretStr | None:
+        provider = info.data.get("provider")
+        if not isinstance(provider, str):
+            return value
+        if not provider_requires_api_key(provider):
+            return None
+        if value is None or not value.get_secret_value().strip():
             raise ValueError("API Key 不能为空")
         return value
 
 
 class ModelLogin(ProviderConnection):
-    """一次 API 登录的完整输入；model_name 是提供商的精确模型 ID，不推断别名。"""
+    """一次模型配置的完整输入；model_name 是精确 ID，api_key 仅认证厂商需要。"""
 
     model_name: NonEmptyString
 
@@ -87,11 +96,11 @@ class ConfiguredModel:
 
 
 def list_configured_models() -> list[ConfiguredModel]:
-    """列出已保存 API 凭据的注册厂商下全部本地模型，不联网、不改配置。"""
+    """列出已导入模型；需认证厂商要求已存 Key，免 Key 厂商只需目录，不联网、不写入。"""
     documents = _load_documents()
     result: list[ConfiguredModel] = []
     for provider in supported_providers():
-        if _stored_api_key(documents, provider) is None:
+        if provider_requires_api_key(provider) and _stored_api_key(documents, provider) is None:
             continue
         catalog = documents.providers.get(provider)
         if catalog is None:
@@ -149,9 +158,9 @@ def _load_documents() -> _Documents:
 
 
 def check_model_configuration() -> ConfigurationStatus:
-    """检查磁盘上的默认模型、API 认证及目录是否齐全；不写文件、不初始化模型、不联网。
+    """检查默认选择、目录及厂商要求的认证；不写文件、不初始化模型、不联网。
 
-    缺文件、缺默认字段、缺模型或缺认证返回未就绪；损坏配置返回安全提示，
+    免 Key 厂商不要求 auth.json；认证厂商缺 Key 仍未就绪。损坏配置返回安全提示，
     让入口仍能接收 /login 或退出，但登录保存时会拒绝覆盖损坏文件。
     """
     try:
@@ -163,10 +172,11 @@ def check_model_configuration() -> ConfigurationStatus:
         return ConfigurationStatus(False, "尚未配置默认厂商和模型。")
     if provider not in supported_providers():
         return ConfigurationStatus(False, "默认模型厂商尚未注册。")
-    credential = documents.credentials.get(provider)
-    if (credential is None or credential.type != "api_key" or credential.key is None
-            or not credential.key.get_secret_value().strip()):
-        return ConfigurationStatus(False, "默认模型缺少可用的 API Key。")
+    if provider_requires_api_key(provider):
+        credential = documents.credentials.get(provider)
+        if (credential is None or credential.type != "api_key" or credential.key is None
+                or not credential.key.get_secret_value().strip()):
+            return ConfigurationStatus(False, "默认模型缺少可用的 API Key。")
     catalog = documents.providers.get(provider)
     definition = next((model for model in catalog.models if model.id == model_name), None) if catalog else None
     if definition is None or definition.provider not in (None, provider):
@@ -180,8 +190,8 @@ async def discover_models(connection: ProviderConnection) -> list[str]:
 
 
 def _stored_api_key(documents: _Documents, provider: str) -> SecretStr | None:
-    if provider not in supported_providers():
-        raise ValueError("模型厂商未注册")
+    if not provider_requires_api_key(provider):
+        return None
     credential = documents.credentials.get(provider)
     if credential is None:
         return None
@@ -192,7 +202,7 @@ def _stored_api_key(documents: _Documents, provider: str) -> SecretStr | None:
 
 
 def is_provider_logged_in(provider: str) -> bool:
-    """只检查是否保存了非空 API Key，不联网，也不代表凭据仍然有效。"""
+    """仅表示认证厂商保存了非空 Key；免 Key 厂商返回 False，不伪装登录或服务可达。"""
     return _stored_api_key(_load_documents(), provider) is not None
 
 
@@ -207,15 +217,17 @@ def _normalize_model_names(model_names: Sequence[str]) -> tuple[str, ...]:
 
 
 async def prepare_provider_login(provider: str, api_key: SecretStr | None = None) -> ProviderLogin:
-    """复用认证并获取完整列表，尚不落盘；只有未登录的厂商才需要 api_key。
+    """根据厂商能力获取完整列表，尚不落盘；免 Key 厂商省略 api_key 即可。
 
-    每次登录尝试刷新目录。已有 Key 且未显式替换时，网络失败可回退本地目录；
+    每次尝试刷新目录。免 Key 厂商可回退已导入缓存，不保留传入或旧占位 Key。
+    认证厂商已有 Key 且未显式替换时，网络失败可回退本地目录；
     新 Key 查询失败则报错，不能把它与旧目录拼接后假称登录成功。
     调用本函数表示用户请求使用该厂商模块定义的地址，不再额外询问是否拉取。
     """
     documents = _load_documents()
-    key = api_key if api_key is not None else _stored_api_key(documents, provider)
-    if key is None:
+    requires_key = provider_requires_api_key(provider)
+    key = (api_key if api_key is not None else _stored_api_key(documents, provider)) if requires_key else None
+    if requires_key and key is None:
         raise ValueError("该厂商尚未登录，请输入 API Key。")
     connection = ProviderConnection(provider=provider, api_key=key)
     from_cache = False
@@ -223,8 +235,10 @@ async def prepare_provider_login(provider: str, api_key: SecretStr | None = None
         names = _normalize_model_names(await discover_models(connection))
     except Exception:
         cached = documents.providers.get(provider)
-        if api_key is not None or cached is None or not cached.models:
-            raise ValueError("无法获取厂商模型列表，请检查网络或 API Key 后重试。") from None
+        if (requires_key and api_key is not None) or cached is None or not cached.models:
+            message = ("无法获取厂商模型列表，请检查网络或 API Key 后重试。" if requires_key else
+                       "无法获取本地模型列表，请确认推理服务已启动并已下载模型。")
+            raise ValueError(message) from None
         names = _normalize_model_names([model.id for model in cached.models if model.provider in (None, provider)])
         from_cache = True
     return ProviderLogin(connection, names, from_cache)
@@ -248,7 +262,8 @@ def save_model_login(login: ModelLogin, *, model_names: Sequence[str]) -> LoginR
     model_names 为本次取得的全部 ID（也可为离线缓存），选择必须在该列表中。
     地址和已知思考能力来自厂商模块；仅补齐缺失/null 映射，已有映射（含空表）不覆盖。
     同 ID 的额外元数据、其他厂商和未返回旧条目保留，不猜测未登记模型能力。
-    同厂商共用一个 Key。默认模型会更新，已有思考等级不变；不会在这里重建运行模型。
+    认证厂商共用一个 Key；免 Key 厂商不创建或修改 auth.json，保留已有认证原文。
+    默认模型会更新，已有思考等级不变；不会在这里重建运行模型。
     JSON 逐文件原子替换，权限 0600；没有跨文件事务/跨进程锁，损坏文件不自动覆盖。
     """
     names = _normalize_model_names(model_names)
@@ -257,9 +272,12 @@ def save_model_login(login: ModelLogin, *, model_names: Sequence[str]) -> LoginR
     documents = _load_documents()
     _ = _stored_api_key(documents, login.provider)
     provider_models = documents.providers.get(login.provider, ProviderModels(models=[])).models
-    provider_auth = documents.auth.setdefault(login.provider, {})
-    assert isinstance(provider_auth, dict)
-    provider_auth.update({"type": "api_key", "key": login.api_key.get_secret_value()})
+    requires_key = provider_requires_api_key(login.provider)
+    if requires_key:
+        assert login.api_key is not None
+        provider_auth = documents.auth.setdefault(login.provider, {})
+        assert isinstance(provider_auth, dict)
+        provider_auth.update({"type": "api_key", "key": login.api_key.get_secret_value()})
     provider_data = documents.catalog.setdefault(login.provider, {"models": []})
     assert isinstance(provider_data, dict)
     entries = provider_data["models"]
@@ -286,9 +304,11 @@ def save_model_login(login: ModelLogin, *, model_names: Sequence[str]) -> LoginR
     documents.selection.update({"defaultProvider": login.provider, "defaultModel": login.model_name})
     _ = Settings.model_validate(documents.selection)
     directory = settings.root / "agent"
+    documents_to_write = [("model-store.json", documents.catalog), ("settings.json", documents.selection)]
+    if requires_key:
+        documents_to_write.insert(0, ("auth.json", documents.auth))
     try:
-        for name, document in (("auth.json", documents.auth), ("model-store.json", documents.catalog),
-                               ("settings.json", documents.selection)):
+        for name, document in documents_to_write:
             path = directory / name
             if not path.exists() or document != _read_document(path):
                 _write_document(path, document)

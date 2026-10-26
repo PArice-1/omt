@@ -14,6 +14,7 @@ dependencies = [
     "langchain>=1.4.4",
     "langchain-deepseek>=1.1.1",
     "langchain-mcp-adapters>=0.3.2",
+    "langchain-ollama>=1.1.0",
     "langgraph>=1.2.14",
     "langgraph-checkpoint-sqlite>=3.1.2",
     "loadenv>=0.1.1",

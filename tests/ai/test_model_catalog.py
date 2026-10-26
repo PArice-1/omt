@@ -32,7 +32,7 @@ def test_catalog_uses_provider_default_or_explicit_low_level_prefix(
     assert request.get_header("Authorization") == "Bearer fake-api-key"
     assert opener.open.call_args.kwargs["timeout"] == 10
     assert response.closed
-    assert supported_providers() == ("deepseek",)
+    assert supported_providers() == ("deepseek", "ollama")
 
 
 @pytest.mark.parametrize("payload", [b'{"data":[]}', b'{"data":[{"id":42}]}',
@@ -76,6 +76,15 @@ def test_catalog_errors_hide_details_and_close_http_resources(
         assert response.closed
     handler = builder.call_args.args[0]
     assert handler.redirect_request(Mock(), io.BytesIO(), 302, "redirect", {}, "https://other.test") is None
+
+
+@pytest.mark.parametrize("key", [None, "", " "])
+def test_cloud_catalog_still_requires_nonblank_key(key: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
+    builder = Mock()
+    monkeypatch.setattr(deepseek, "build_opener", builder)
+    with pytest.raises(ValueError, match="API Key 不能为空"):
+        _ = list_provider_models(provider="deepseek", api_key=SecretStr(key) if key is not None else None)
+    builder.assert_not_called()
 
 
 def test_unregistered_provider_catalog_is_rejected() -> None:

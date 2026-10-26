@@ -8,7 +8,7 @@
 
 原 test_session.py 的模型解析和 Agent 组装用例迁入 test_bootstrap.py，直接测试共用 build_model/build_agent，不再经已删除的 CLI 私有别名。交互、输入、信号与完整组装链路迁入 [CLI 测试](cli.md)，恢复迁入 [/resume 测试](resume.md)。这不是删除旧行为覆盖：低层模型断言保留；旧失败后直接重试契约按 Manager 的保守策略替换。
 
-配置读取器保持严格只读，缺失文件仍报错。显式登录由 core/model_configuration.py 校验并持久化，不再放在 CLI；就绪检查允许缺默认字段并返回未就绪，让 CLI 提示 /login。数据库初始化另由 core/store.py 的显式函数承担，见[模型登录测试](model-login.md)，不在读取器中添加隐式写入。
+配置读取器保持严格只读，直接调用缺失文件仍报错；免 Key 的 Ollama 构建不会调用 auth 读取器，因此不要求该文件存在。显式登录由 core/model_configuration.py 校验并持久化，不再放在 CLI；就绪检查允许缺默认字段并返回未就绪，让 CLI 提示 /login。数据库初始化另由 core/store.py 的显式函数承担，见[模型登录测试](model-login.md)，不在读取器中添加隐式写入。
 
 ## 配置读取场景
 
@@ -29,6 +29,7 @@
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
+| Ollama 无认证文件构建 | 临时目录仅有模型定义，删除 auth.json；选择 Ollama，SDK 工厂返回 FakeListChatModel | build_model 经真实 Model/注册表适配返回可用模型，不读取或新建 auth；原生 reasoning=False，不向 SDK 传 api_key；旧 DeepSeek 缺 Key/OAuth 拒绝回归保留 | test_get_ollama_model_without_auth_file |
 | 三份配置拼接 | 假默认选择、认证与目录匹配，省略 defaultThinkingLevel，目录仍有 media→high | provider/model/精确 URL/SecretStr 传至 SDK 替身，不因目录存在映射就默认开启 thinking，不向 SDK 发送 effort，返回可用模型 | test_get_model_joins_settings_auth_and_matching_catalog_entry |
 | 显式思考等级 | high→max 或 none→high | high 使用映射后的 max，不误用原等级名；显式 none 即使在目录中映射到 high 也不主动配置 thinking/effort，返回可用模型 | test_get_model_maps_selected_thinking_level |
 | 未配置或所选思考映射不可用 | 等级为 None/media/none，分别结合 thinkingLevelMap 缺失、为 null、为空、仅支持 high 或 media→null | 按 none 处理，返回可用模型；不向 SDK 发送 effort，也不新增 thinking，不因缺失能力中断初始化 | test_get_model_uses_none_when_thinking_is_unconfigured_or_unavailable |

@@ -67,17 +67,20 @@ GET /api/v1/runtime
 
 ### GET /api/v1/providers
 
-返回注册厂商和本地凭据状态：
+返回注册厂商、认证要求和本地凭据状态：
 
 ```json
-[{"provider":"deepseek","logged_in":true}]
+[
+  {"provider":"deepseek","logged_in":true,"requires_api_key":true},
+  {"provider":"ollama","logged_in":false,"requires_api_key":false}
+]
 ```
 
-不返回 Key；logged_in 不代表 Key 仍有效。当前实际注册厂商以返回列表为准。
+`requires_api_key` 是新增的布尔字段，前端按 `requires_api_key && !logged_in` 决定首次配置时是否显示并必填 Key。不要仅凭 logged_in=false 要求登录：Ollama 无需认证，logged_in 保持 false，不表示不可使用。免 Key 厂商可直接预览模型，不能要求用户填写占位 Key。不返回 Key；logged_in 仅表示本地存在认证厂商的非空 Key，不代表凭据有效；两字段均不保证服务可达或模型已下载。当前实际注册厂商以返回列表为准。
 
 ### GET /api/v1/models
 
-只读本地配置，不联网；返回已保存凭据的注册厂商下全部已导入模型，不只是曾经选过的模型：
+只读本地配置，不联网；返回注册厂商下全部已导入模型（需认证厂商要求已存 Key，Ollama 无需 auth.json），不只是曾经选过的模型：
 
 ```json
 [
@@ -129,6 +132,14 @@ GET /api/v1/runtime
 {"provider":"deepseek"}
 ```
 
+Ollama 首次使用也直接省略 Key，不要求任何本地认证文件：
+
+```json
+{"provider":"ollama"}
+```
+
+请求会查询默认 `http://localhost:11434/api/tags` 的已下载模型。兼容客户端传入 null、空字符串或旧占位 Key 时，会归一为无凭据，不保存或发送；推荐直接不传 api_key。DeepSeek 的空字符串仍为 422，省略时必须有可复用的 Key。Ollama 未启动或无模型时返回安全的 422 `login_preview_failed`，提示检查本地服务和已下载模型，不索取 Key。
+
 成功为 201：
 
 ```json
@@ -142,7 +153,7 @@ GET /api/v1/runtime
 ```
 
 - 显式查询提供商目录，不保存、不创建数据库；新 Key 查询失败不使用旧缓存假装成功。
-- 已保存 Key 且未替换时，查询失败可以回退本地目录，from_cache=true。
+- 认证厂商已保存 Key 且未替换时，查询失败可以回退本地目录，from_cache=true；Ollama 无需凭据也可使用已导入的缓存，不保证服务恢复可用。
 - 预览包含的凭据仅在服务端内存暂存；有效期从生成后计，默认 600 秒，到期清除，重启即失效。
 - 默认最多 8 份预览，查询中的请求也占名额；超限返回 429。
 - Key 不出现在响应中。客户端不写 localStorage、聊天历史、URL、日志或异常追踪，提交后尽快清空输入缓冲。
@@ -166,7 +177,7 @@ GET /api/v1/runtime
 }
 ```
 
-确认会保存凭据、完整厂商目录和默认模型。尚无运行环境时，显式初始化缺失数据库后启用；已有数据库不修复、不迁移。已有运行实例时尝试切换到所选模型。
+确认会保存完整厂商目录和默认模型；只有需认证厂商才保存凭据。Ollama 不创建或修改 auth.json，已有其他厂商和旧占位认证保留原字节但不使用；也不需要手动创建空认证文件。尚无运行环境时，显式初始化缺失数据库后启用；已有数据库不修复、不迁移。已有运行实例时尝试切换到所选模型。
 
 **保存与启用不是事务：**保存成功、启用失败时仍返回 200、configuration_saved=true，但 error 非空，包含稳定 code/message。runtime_ready 可能为 false，也可能表示旧实例仍可用；以 runtime.thinking 判断真正运行的模型。预览在成功保存后即被消耗，重复确认返回 404。保存错误返回 503，可能已有逐文件部分写入，不能假定完全未修改。
 

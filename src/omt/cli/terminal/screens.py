@@ -52,7 +52,7 @@ class ChoiceScreen(ModalScreen[str | None]):
 
 @final
 class LoginScreen(ModalScreen[LoginResult | None]):
-    """选厂商、首次输入 Key、选模型即保存；后台查询取消后不落盘。"""
+    """按厂商认证要求输入或跳过 Key，选模型即保存；后台查询取消后不落盘。"""
 
     BINDINGS = [Binding("escape", "cancel", "取消")]
 
@@ -70,7 +70,7 @@ class LoginScreen(ModalScreen[LoginResult | None]):
     def compose(self) -> ComposeResult:
         with VerticalScroll(classes="dialog", id="login-dialog"):
             yield Label("连接模型", classes="dialog-title")
-            yield Static("同一厂商只需登录一次。选择模型后自动保存。", classes="dialog-hint")
+            yield Static("本地厂商无需 Key；其他厂商首次输入 Key。选择模型后自动保存。", classes="dialog-hint")
             yield self.provider_select
             yield self.key_input
             yield self.load_button
@@ -81,8 +81,11 @@ class LoginScreen(ModalScreen[LoginResult | None]):
     def on_mount(self) -> None:
         try:
             providers = model_configuration.supported_providers()
-            choices = [(Text(f"{name} · {'已登录' if model_configuration.is_provider_logged_in(name) else '未登录'}"), name)
-                       for name in providers]
+            choices: list[tuple[Text, str]] = []
+            for name in providers:
+                state = ("无需 API Key" if not model_configuration.provider_requires_api_key(name) else
+                         "已登录" if model_configuration.is_provider_logged_in(name) else "未登录")
+                choices.append((Text(f"{name} · {state}"), name))
         except (ValueError, OSError):
             self.status("配置无法读取，请检查配置文件；不会自动覆盖。")
         else:
@@ -103,15 +106,16 @@ class LoginScreen(ModalScreen[LoginResult | None]):
         model_select.disabled = True
         model_select.display = False
         try:
-            logged_in = model_configuration.is_provider_logged_in(event.value)
+            needs_key = (model_configuration.provider_requires_api_key(event.value) and
+                         not model_configuration.is_provider_logged_in(event.value))
         except (ValueError, OSError):
             self.status("无法读取认证，请检查配置文件。")
             return
-        self.key_input.disabled = logged_in
-        self.key_input.display = not logged_in
+        self.key_input.disabled = not needs_key
+        self.key_input.display = needs_key
         self.load_button.disabled = False
-        self.load_button.display = not logged_in
-        if logged_in:
+        self.load_button.display = needs_key
+        if not needs_key:
             self.start_loading()
         else:
             self.status("输入 API Key，按 Enter 获取完整模型列表。")
@@ -139,7 +143,11 @@ class LoginScreen(ModalScreen[LoginResult | None]):
         try:
             self.prepared = await model_configuration.prepare_provider_login(provider, key)
         except Exception:
-            self.status("获取失败，尚未保存。请检查网络、Key 或配置文件后重试。")
+            message = ("获取失败，尚未保存。请检查网络、Key 或配置文件后重试。"
+                       if model_configuration.provider_requires_api_key(provider) else
+                       "获取失败，尚未保存。请确认本地推理服务已启动并已下载模型。")
+            self.status(message)
+            self.load_button.display = True
         else:
             select = self.model_select
             select.set_options([(Text(name), name) for name in self.prepared.model_names])

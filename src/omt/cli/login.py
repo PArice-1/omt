@@ -35,7 +35,7 @@ async def _choose(terminal: PromptSession[str], prompt: str, choices: tuple[str,
 
 
 async def login(terminal: PromptSession[str]) -> LoginResult | None:
-    """选择厂商和模型后自动保存；已登录厂商不重复索取 Key，也不询问地址或确认。
+    """选择厂商和模型后自动保存；免 Key 或已有凭据时跳过 Key，不询问地址或确认。
 
     terminal 可注入内存终端。使用厂商内置地址自动拉取完整模型列表，网络失败且
     已有认证时可使用本地目录；首次拉取失败不能凭空选择。选定模型前 EOF 不落盘，
@@ -56,10 +56,13 @@ async def _login(terminal: PromptSession[str]) -> LoginResult | None:
         print("支持的厂商：" + "、".join(providers))
         logged_in = {provider: model_configuration.is_provider_logged_in(provider) for provider in providers}
         for number, provider in enumerate(providers, 1):
-            print(f"{number}. {provider}（{'已登录' if logged_in[provider] else '未登录'}）")
+            state = ("无需 API Key" if not model_configuration.provider_requires_api_key(provider) else
+                     "已登录" if logged_in[provider] else "未登录")
+            print(f"{number}. {provider}（{state}）")
         print("使用厂商内置地址获取完整模型列表，选择后自动保存。")
         provider = await _choose(terminal, "provider（编号或名称）> ", providers)
-        key = None if logged_in[provider] else SecretStr((await _read_api_key(terminal)).strip())
+        needs_key = model_configuration.provider_requires_api_key(provider) and not logged_in[provider]
+        key = SecretStr((await _read_api_key(terminal)).strip()) if needs_key else None
         prepared = await model_configuration.prepare_provider_login(provider, key)
         if prepared.from_cache:
             print("[模型列表刷新失败] 使用已缓存的本地模型列表，无需重新登录。")

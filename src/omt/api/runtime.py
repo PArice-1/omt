@@ -145,7 +145,8 @@ class ApiRuntime:
     def providers(self) -> list[ProviderResponse]:
         self._ensure_mutable()
         try:
-            return [ProviderResponse(provider=name, logged_in=configuration.is_provider_logged_in(name))
+            return [ProviderResponse(provider=name, logged_in=configuration.is_provider_logged_in(name),
+                                     requires_api_key=configuration.provider_requires_api_key(name))
                     for name in configuration.supported_providers()]
         except (ValueError, OSError) as exc:
             raise SessionError("configuration_invalid", "本地模型配置无法读取，请检查配置") from exc
@@ -222,7 +223,9 @@ class ApiRuntime:
                 self._discard_preview(key)
 
     async def preview(self, provider: str, api_key: SecretStr | None) -> LoginPreviewResponse:
-        """显式查询注册厂商 provider；api_key=None 复用本地凭据，非空则预览新 Key。
+        """显式查询注册厂商 provider；认证厂商 api_key=None 复用凭据，非空则预览新 Key。
+
+        免 Key 厂商可省略 api_key，兼容传入值会丢弃，不保存占位认证。
 
         预览限量且过期；Key 不落盘、不进入响应，失败或取消释放名额。
         """
@@ -245,7 +248,10 @@ class ApiRuntime:
                                         models=list(login.model_names), from_cache=login.from_cache,
                                         expires_in=self.options.login_preview_ttl)
         except (ValueError, OSError) as exc:
-            raise SessionError("login_preview_failed", "无法获取模型目录，请检查厂商、凭据或本地配置") from exc
+            message = "无法获取模型目录，请检查厂商、凭据或本地配置"
+            if provider in configuration.supported_providers() and not configuration.provider_requires_api_key(provider):
+                message = "无法获取本地模型目录，请确认推理服务已启动并已下载模型"
+            raise SessionError("login_preview_failed", message) from exc
         finally:
             self._preparing -= 1
             if task is not None:

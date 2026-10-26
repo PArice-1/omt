@@ -146,7 +146,7 @@ def test_catalog_uses_native_tags_and_preserves_full_names(
     opener.open.return_value = response
     monkeypatch.setattr(ollama, "build_opener", Mock(return_value=opener))
     if base_url is None:
-        result = list_provider_models(provider="ollama", api_key=SecretStr("must-not-be-sent"))
+        result = list_provider_models(provider="ollama")
         expected_url = "http://localhost:11434/api/tags"
     else:
         result = ollama.list_ollama_models(base_url=base_url)

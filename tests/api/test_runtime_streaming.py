@@ -142,7 +142,8 @@ def test_first_configuration_is_preview_then_confirm_and_runs(config: ApiSetting
         assert status["configured"] is False and status["ready"] is False
         assert client.get("/api/v1/models").json() == []
         assert client.get("/api/v1/providers").json() == [
-            {"provider": "deepseek", "logged_in": False}, {"provider": "ollama", "logged_in": False},
+            {"provider": "deepseek", "logged_in": False, "requires_api_key": True},
+            {"provider": "ollama", "logged_in": False, "requires_api_key": False},
         ]
         assert not settings.root.exists() and not config.db_path.exists() and not sdk
         assert client.post("/api/v1/sessions", json={}).json()["error"]["code"] == "runtime_not_ready"
@@ -167,6 +168,65 @@ def test_first_configuration_is_preview_then_confirm_and_runs(config: ApiSetting
         assert client.post(f"/api/v1/sessions/{identifier}/runs", json={"message": "你好"}).json()["answer"] == "回答:deepseek-flash"
         for path in ("/api/v1/runtime", "/api/v1/models", "/api/v1/providers"):
             assert KEY not in client.get(path).text
+
+
+@pytest.mark.parametrize("key_fields", [{}, {"api_key": None}, {"api_key": ""}, {"api_key": "test-unused-key"}])
+def test_ollama_configuration_without_key_runs_switches_and_restarts(
+    config: ApiSettings, monkeypatch: pytest.MonkeyPatch, key_fields: dict[str, str | None],
+) -> None:
+    names = ["qwen3:8b", "llama3.2:latest"]
+    discover = AsyncMock(return_value=names)
+    monkeypatch.setattr(model_configuration, "discover_models", discover)
+    factory = Mock(return_value=RecordingModel(responses=[
+        AIMessage(content="本地回答"), AIMessage(content="本地后续回答"),
+    ]))
+    monkeypatch.setattr("omt.ai.models.ollama.init_chat_model", factory)
+    with TestClient(create_app(config)) as client:
+        providers = client.get("/api/v1/providers").json()
+        assert next(item for item in providers if item["provider"] == "ollama") == {
+            "provider": "ollama", "logged_in": False, "requires_api_key": False,
+        }
+        preview_response = client.post("/api/v1/model-logins", json={"provider": "ollama", **key_fields})
+        assert preview_response.status_code == 201
+        assert not settings.root.exists() and not config.db_path.exists()
+        assert discover.call_args.args[0].api_key is None
+        response = client.post(f"/api/v1/model-logins/{preview_response.json()['login_id']}/confirm",
+                               json={"model": names[0]})
+        assert response.status_code == 200
+        assert response.json()["configuration_saved"] and response.json()["runtime_ready"]
+        assert not (settings.root / "agent" / "auth.json").exists()
+        assert {item["model"] for item in client.get("/api/v1/models").json()} == set(names)
+        identifier = session(client)
+        assert client.post(f"/api/v1/sessions/{identifier}/runs", json={"message": "你好"}).json()["answer"] == "本地回答"
+        switched = client.put("/api/v1/runtime/model", json={"provider": "ollama", "model": names[1]})
+        assert switched.status_code == 200 and switched.json()["thinking"]["model"] == names[1]
+        assert factory.call_args.kwargs["model"] == names[1] and "api_key" not in factory.call_args.kwargs
+        streamed = client.post(f"/api/v1/sessions/{identifier}/runs/stream", json={"message": "继续"})
+        assert events(streamed.text)[-1].type == "run.completed"
+        assert settings.load_settings().defaultModel == names[0]
+        assert "test-unused-key" not in preview_response.text + response.text
+    with TestClient(create_app(config)) as client:
+        status = client.get("/api/v1/runtime").json()
+        assert status["configured"] and status["ready"] and status["thinking"]["model"] == names[0]
+        restored = client.get(f"/api/v1/sessions/{identifier}/messages")
+        assert restored.status_code == 200
+        assert [item["text"] for item in restored.json()] == ["你好", "本地回答", "继续", "本地后续回答"]
+    assert not (settings.root / "agent" / "auth.json").exists()
+
+
+@pytest.mark.parametrize("failure", ["unavailable", "empty"])
+def test_ollama_preview_failure_reports_service_not_key(
+    failure: str, config: ApiSettings, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    discover = (AsyncMock(side_effect=ValueError("test-private-marker")) if failure == "unavailable" else
+                AsyncMock(return_value=[]))
+    monkeypatch.setattr(model_configuration, "discover_models", discover)
+    with TestClient(create_app(config)) as client:
+        response = client.post("/api/v1/model-logins", json={"provider": "ollama"})
+        assert response.status_code == 422 and response.json()["error"]["code"] == "login_preview_failed"
+        assert "推理服务" in response.json()["error"]["message"]
+        assert "API Key" not in response.text and "test-private-marker" not in response.text
+    assert not settings.root.exists() and not config.db_path.exists()
 
 
 def test_preview_limits_expiry_and_errors_do_not_persist(

@@ -38,14 +38,14 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def list_deepseek_models(*, api_key: SecretStr, base_url: HttpUrl = DEEPSEEK_BASE_URL) -> list[str]:
+def list_deepseek_models(*, api_key: SecretStr | None, base_url: HttpUrl = DEEPSEEK_BASE_URL) -> list[str]:
     """查询 DeepSeek 的完整模型 ID 列表，不初始化聊天模型。
 
     默认地址由本厂商模块维护，/login 无需输入。base_url 仅供底层显式覆盖（如测试
     或代理适配），在其路径后追加 /models；不跟随重定向改变凭据发送目标。
     十秒超时、响应上限 1 MiB、不跟随重定向；只返回 ID，不猜测思考能力。
     """
-    if not api_key.get_secret_value().strip():
+    if api_key is None or not api_key.get_secret_value().strip():
         raise ValueError("API Key 不能为空")
     if base_url.username is not None or base_url.password is not None or base_url.query or base_url.fragment:
         raise ValueError("模型地址不得包含认证、查询参数或片段")

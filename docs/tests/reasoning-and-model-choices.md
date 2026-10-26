@@ -15,7 +15,7 @@
 | 仅完整内容块 | FakeMessagesListChatModel 一次性返回 reasoning/text 完整块；分别 run/arun | 没有 token delta 时 finish 补发全部内容各一次，reasoning 不混入最终回答 | test_finish_only_reasoning_is_emitted_without_becoming_answer |
 | 空目录与完整导入 | 无配置调用快捷列表，再登录一个模型但导入多个完整 ID | 首次返回空列表且不创建目录；导入后按厂商/模型排序返回所有已配置项；已知映射按 none/low/high/max 排列，未知仅 none；读取前后配置字节不变 | test_configured_choices_are_read_only_and_include_the_full_catalog |
 | 思考等级语义排序与兼容 | 本地目录参数化为 null/空映射、乱序 low/high/max、包含 medium 与自定义名称、null 能力及与等级强度相反的 effort 映射 | none 恒在首位；已支持的 low/medium/high/max 按等级名语义排列，不按 effort 值或字母；自定义名称在后按名称稳定排列；不补未声明能力，不写配置 | test_thinking_levels_use_strength_order_and_preserve_custom_levels |
-| 无凭据 | 已有目录但没有 auth，或 Key 为空/纯空白 | 不把这些模型列成可切换项，不创建默认设置 | test_choices_exclude_models_without_saved_credentials |
+| 认证厂商无凭据 | 已有 DeepSeek 目录但没有 auth，或 Key 为空/纯空白 | 不把这些模型列成可切换项，不创建默认设置；Ollama 免 Key 目录另由模型配置专项验证 | test_choices_exclude_models_without_saved_credentials |
 | 未注册或厂商错配 | 临时本地目录含未注册厂商和与所属厂商不一致的模型项 | 只返回注册且身份匹配的已认证模型，不猜测其他厂商的能力 | test_choices_skip_unregistered_and_mismatched_provider_entries |
 
 ## 隔离方式

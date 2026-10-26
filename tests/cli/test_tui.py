@@ -182,7 +182,46 @@ def test_login_thinking_and_model_switch_use_core_without_exposing_key(
     asyncio.run(execute())
 
 
-def test_cancel_directory_fetch_cleans_worker_without_saving(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("retry", [False, True])
+def test_ollama_selection_skips_key_and_can_retry(
+    retry: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    discover = AsyncMock(return_value=["qwen3:8b"])
+    if retry:
+        discover.side_effect = [ValueError("test-private-marker"), ["qwen3:8b"]]
+    monkeypatch.setattr(model_configuration, "discover_models", discover)
+    factory = Mock(return_value=LocalModel(responses=[AIMessage(content="离线回答")]))
+    monkeypatch.setattr(import_module("omt.ai.models.ollama"), "init_chat_model", factory)
+
+    async def execute() -> None:
+        app = OmtApp()
+        async with app.run_test(size=(100, 40)) as pilot:
+            await idle(pilot, app)
+            await pilot.press("f2")
+            app.screen.query_one("#provider", Select).value = "ollama"
+            await pilot.pause()
+            assert not app.screen.query_one("#api-key", Input).display
+            if retry:
+                await until(pilot, lambda: app.screen.query_one("#load-models", Button).display and
+                            not app.screen.query_one("#load-models", Button).disabled)
+                assert not settings.root.exists() and "test-private-marker" not in app.export_screenshot()
+                assert app.screen.query_one("#login-model", Select).disabled
+                _ = await pilot.click("#load-models")
+            await until(pilot, lambda: not app.screen.query_one("#login-model", Select).disabled)
+            app.screen.query_one("#login-model", Select).value = "qwen3:8b"
+            await idle(pilot, app)
+            assert app.active is not None and model_configuration.check_model_configuration().ready
+            assert settings.load_settings().defaultProvider == "ollama"
+            assert not (settings.root / "agent" / "auth.json").exists()
+            assert "api_key" not in factory.call_args.kwargs
+            await pilot.press("ctrl+q")
+    asyncio.run(execute())
+
+
+@pytest.mark.parametrize("provider", ["deepseek", "ollama"])
+def test_cancel_directory_fetch_cleans_worker_without_saving(
+    monkeypatch: pytest.MonkeyPatch, provider: str,
+) -> None:
     async def execute() -> None:
         started, cleaned = asyncio.Event(), asyncio.Event()
 
@@ -198,10 +237,13 @@ def test_cancel_directory_fetch_cleans_worker_without_saving(monkeypatch: pytest
         async with app.run_test(size=(90, 35)) as pilot:
             await idle(pilot, app)
             await pilot.press("f2")
-            app.screen.query_one("#provider", Select).value = "deepseek"
+            app.screen.query_one("#provider", Select).value = provider
             await pilot.pause()
-            app.screen.query_one("#api-key", Input).value = "fake-key"
-            _ = await pilot.click("#load-models")
+            if provider == "deepseek":
+                app.screen.query_one("#api-key", Input).value = "fake-key"
+                _ = await pilot.click("#load-models")
+            else:
+                assert not app.screen.query_one("#api-key", Input).display
             await until(pilot, started.is_set)
             await pilot.press("escape")
             await until(pilot, cleaned.is_set)

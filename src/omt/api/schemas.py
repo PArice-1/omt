@@ -3,8 +3,9 @@
 from typing import ClassVar, Literal
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, ValidationInfo, field_validator
 
+from omt.core.model_configuration import provider_requires_api_key, supported_providers
 from omt.core.session_manager import validate_message
 from omt.core.settings import NonEmptyString
 from omt.core.store import SessionRecord
@@ -137,8 +138,11 @@ class RuntimeResponse(BaseModel):
 
 
 class ProviderResponse(BaseModel):
+    """requires_api_key 决定是否需要凭据；logged_in 仅表示有本地 Key，不表示服务可达。"""
+
     provider: str
     logged_in: bool
+    requires_api_key: bool
 
 
 class ModelResponse(BaseModel):
@@ -154,7 +158,10 @@ class LoginPreviewRequest(StrictRequest):
 
     @field_validator("api_key")
     @classmethod
-    def nonblank_key(cls, value: SecretStr | None) -> SecretStr | None:
+    def nonblank_key(cls, value: SecretStr | None, info: ValidationInfo) -> SecretStr | None:
+        provider = info.data.get("provider")
+        if isinstance(provider, str) and provider in supported_providers() and not provider_requires_api_key(provider):
+            return None
         if value is not None and not value.get_secret_value().strip():
             raise ValueError("API Key 不能为空")
         return value

@@ -65,8 +65,8 @@ stdio 还支持 env；HTTP 支持 url 和 headers。只使用可信地址和进�
 | --- | --- |
 | `GET /health` | 200 存活检查，不探测模型/数据库 |
 | `GET /api/v1/runtime` | 配置就绪状态、当前模型和思考等级、忙碌快照 |
-| `GET /api/v1/providers` | 注册厂商及本地凭据状态，不返回 Key |
-| `GET /api/v1/models` | 已保存凭据的厂商下全部本地已导入模型，不联网 |
+| `GET /api/v1/providers` | 注册厂商、requires_api_key 认证要求及本地凭据状态，不返回 Key |
+| `GET /api/v1/models` | 全部可选的本地已导入模型；仅认证厂商要求已存 Key，Ollama 不需要，不联网 |
 | `POST /api/v1/model-logins` | 201；查询厂商目录并创建内存预览，未确认不落盘 |
 | `POST /api/v1/model-logins/{id}/confirm` | 保存所选模型及完整目录，尝试启用；分别返回保存/运行结果 |
 | `PUT /api/v1/runtime/model` | 从本地快捷列表切换当前进程模型，不保存 |
@@ -81,7 +81,7 @@ stdio 还支持 env；HTTP 支持 url 和 headers。只使用可信地址和进�
 
 ## 最小调用
 
-先读状态；没有配置时，前端通过密码输入框收集 Key，调用模型预览接口，再确认模型。不要把真实 Key 写进命令行历史或日志。详细请求见[首次配置](frontend-api.md#3-首次配置)。
+先读状态和厂商列表；前端仅在 requires_api_key=true 且 logged_in=false 时通过密码输入框收集 Key，然后预览并确认模型。Ollama 直接提交 `{"provider":"ollama"}`，不输入 Key、不创建 auth.json；先自行启动本地 Ollama 并下载模型。不要把真实 Key 写进命令行历史或日志。详细请求见[首次配置](frontend-api.md#3-首次配置)。
 
 已有运行环境时：
 

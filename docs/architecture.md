@@ -2,22 +2,23 @@
 
 ## 1. 总览
 
-CLI 与非流式 FastAPI 是平级的应用入口，共用 SessionManager、依赖组装和 SQLite 检查点。LangChain/LangGraph 负责模型与工具循环，OMT 负责模型连接、会话编排、完整历史校验，以及各入口的展示或响应投影。
+CLI 与支持 JSON/SSE 的 FastAPI 是平级的应用入口，共用 SessionManager、依赖组装和 SQLite 检查点。LangChain/LangGraph 负责模型与工具循环，OMT 负责模型连接、会话编排、完整历史校验，以及各入口的展示或响应投影。
 
 ```text
-omt / python -m omt.cli               omt-api
-  → cli.app.main → terminal.tui.OmtApp → api.app lifespan + routes
-    （--plain → cli.app.run_cli）
-     输入、命令、当前选择、终端输出          请求校验、JSON 投影（当前免认证）
-               \                       /
-       bootstrap.open_session_runtime        bootstrap.open_session_manager
-         → SessionRuntime（可切换模型）          → 固定模型
-                  → 工具/MCP、Store、AsyncSqliteSaver
-                  → 当前 SessionManager
-                     ├─ SessionStore：索引与目录归属
-                     ├─ Checkpointer：每次读取最新历史
-                     └─ Conversation：一轮执行、完整终态校验、结构化事件
-                          → Agent → 模型 / 工具
+omt / python -m omt.cli                 omt-api
+  → CLI/TUI 输入与展示                    → FastAPI lifespan + routes
+  → bootstrap.open_session_runtime        → api.runtime.ApiRuntime
+                                         （无配置可启动、预览/确认、请求借用保护）
+                    → bootstrap.open_session_runtime
+                    → SessionRuntime（进程级可切换模型）
+                    → 工具/MCP、Store、AsyncSqliteSaver
+                    → 当前 SessionManager
+                       ├─ SessionStore：索引与目录归属
+                       ├─ Checkpointer：每次读取最新历史
+                       └─ Conversation：执行、终态校验、正文/reasoning/工具事件
+                            → Agent → 模型 / 工具
+
+HTTP 事件 → api.streaming.RunStream → 有界缓冲 → SSE 响应
 ```
 
 core 是与入口无关的共用核心，不限定于编码场景。核心不导入 CLI 或 API，不维护全局“当前会话”，不直接打印终端。CLI 当前选择只是入口局部状态；所有会话登记、查询、恢复和执行均通过 Manager，不再直接编排 Store 或 Conversation。
@@ -28,10 +29,10 @@ core 是与入口无关的共用核心，不限定于编码场景。核心不导
 | --- | --- | --- |
 | [cli/app.py](../src/omt/cli/app.py) | 默认 TUI / --plain 路由；保留逐行交互生命周期、延迟会话和 Manager 调用 | 检查点加载、并发和失败保护 |
 | [cli/login.py](../src/omt/cli/login.py) | 逐行 /login 选择、隐藏首次 Key、厂商登录状态与模型列表展示 | JSON 读写、厂商协议、运行模型切换 |
-| [core/model_configuration.py](../src/omt/core/model_configuration.py) | 类型化 API 登录、凭据复用、完整目录与缓存、默认选择持久化 | 终端提示、会话编排、聊天请求、数据库初始化 |
+| [core/model_configuration.py](../src/omt/core/model_configuration.py) | 类型化 API 登录、凭据复用、完整目录与缓存、默认选择持久化及只读 list_configured_models 快捷列表 | 终端提示、会话编排、聊天请求、数据库初始化 |
 | [cli/commands.py](../src/omt/cli/commands.py) | 逐行 /resume、退出、编号映射和当前选择 | 模型执行、直接读写 Store |
 | [cli/terminal/](../src/omt/cli/terminal/) | Textual TUI 生命周期、弹窗、控件、completion.py 指令提示；tui.tcss 独立样式，plain.py 保留旧输入/渲染，__init__.py 重导出旧接口 | 配置/历史存储、厂商协议、HTTP 响应 |
-| [api/](../src/omt/api/) | lifespan、请求/响应和稳定错误；当前暂未启用 Bearer 校验 | CLI 命令、会话内部编排 |
+| [api/](../src/omt/api/) | lifespan；runtime.py 负责配置预览/运行设置，streaming.py 负责有界 SSE 和清理，schemas.py 投影安全字段；当前免认证 | CLI 命令、模型/工具执行循环、后台任务台账 |
 | [core/bootstrap.py](../src/omt/core/bootstrap.py) | 提示词/模型配置和依赖组装；SessionRuntime 持有当前 Manager 并协调模型/推理强度重建 | 输入循环、HTTP 传输 |
 | [core/configuration.py](../src/omt/core/configuration.py) | 共用会话选项、类型化 MCP 连接配置；入口各自继承并指定前缀 | HTTP 令牌、读取模型认证 |
 | [core/session_manager.py](../src/omt/core/session_manager.py) | 按 ID 操作、目录归属、最新历史、互斥/容量、失败和关闭清理 | 跨进程锁、回滚、全局当前会话 |
@@ -55,15 +56,15 @@ uv run python -m omt.cli
 uv run omt-api
 ```
 
-omt 和模块入口均调用 omt.cli.app:main；默认或 --tui 调用 OmtApp.run()，--plain 在最外层调用一次 asyncio.run(run_cli())，不嵌套事件循环。两种界面均先调用 core.model_configuration.check_model_configuration：配置缺失、不完整或无效时仍进入命令循环，提示 /login，不打开 Manager、MCP 或数据库。完成 /login 并补齐默认配置后，通过 core.store.initialize_session_database 显式初始化缺失库，再加载运行环境。已有完整配置的正常启动仍按下述预建库契约校验。自定义工厂绕过初始检查；HTTP 不进行交互初始化。omt-api 指向 omt.api.app:main，默认监听 127.0.0.1:8000，单 worker。当前本机分支的 HTTP 业务无需访问令牌，health 公开且不调用模型；Swagger/OpenAPI 文档也已开放。
+omt 和模块入口均调用 omt.cli.app:main；默认或 --tui 调用 OmtApp.run()，--plain 在最外层调用一次 asyncio.run(run_cli())，不嵌套事件循环。两种界面均先调用 core.model_configuration.check_model_configuration：配置缺失、不完整或无效时仍进入命令循环，提示 /login，不打开 Manager、MCP 或数据库。完成 /login 并补齐默认配置后，通过 core.store.initialize_session_database 显式初始化缺失库，再加载运行环境。已有完整配置的正常启动仍按下述预建库契约校验。CLI 自定义工厂绕过初始检查。HTTP 无配置仍启动配置入口：预览不写文件，确认后保存并初始化缺失库；已有完整配置的正常启动不隐式建库。配置/数据库初始化失败保留 HTTP 配置入口，不回显原始异常。omt-api 指向 omt.api.app:main，默认监听 127.0.0.1:8000，单 worker。当前本机分支的 HTTP 业务无需访问令牌，health 公开且不调用模型；Swagger/OpenAPI 文档也已开放。
 
-HTTP 默认通过 `bootstrap.open_session_manager(options)`；CLI 默认通过 `bootstrap.open_session_runtime(options)`，由 SessionRuntime 持有可替换的 Manager。两者共用配置解析、预建索引校验、提示词、模型与 Agent 组装：
+CLI 和 HTTP 默认都通过 `bootstrap.open_session_runtime(options)`，由 SessionRuntime 持有可替换的 Manager。HTTP 外层 ApiRuntime 管理未配置/未就绪状态、限时限量的内存配置预览和请求借用计数；只在显式确认首次配置后调用 initialize_session_database。两者共用配置解析、预建索引校验、提示词、模型与 Agent 组装：
 1. 确认配置工作目录是实际 cwd，且数据库文件和 sessions 表预先存在；不会 chdir、建索引表或迁移。
 2. 读取包内基础提示词，再解析模型设置/认证/目录，组装模型、内置工具和选定的 MCP。
 3. 持有一个 AsyncSqliteSaver，创建 Store 与 Manager。
 4. 退出先关闭当前 Manager，取消并等待活跃历史/运行操作，再关闭 Saver 连接。
 
-CLI 的 SessionRuntime 提供只读 `manager`/`thinking` 和异步 `set_thinking_level(level)`、`set_model(provider, model_name)`。前者按当前模型目录快照解析等级；后者显式重读所选模型定义和认证，保留请求思考等级，缺映射时实际按 none。两者共用重建链：初始化 Model、创建 Agent，再调用旧 Manager.rebuild(agent) 创建继任 Manager；全部成功后才发布新 Manager、设置和目录快照。构建失败/取消保持旧实例及状态；不请求模型试运行，Runtime 自身不写配置。MCP 工具复用启动发现结果，整个生命周期复用同一个 Saver。HTTP 仍使用固定 Manager，不暴露模型/推理强度修改端点。
+共用 SessionRuntime 提供只读 `manager`/`thinking`/`changing` 和异步 `set_thinking_level(level)`、`set_model(provider, model_name)`。前者按当前模型目录快照解析等级；后者显式重读所选模型定义和认证，保留请求思考等级，缺映射时实际按 none。两者共用重建链：初始化 Model、创建 Agent，再调用旧 Manager.rebuild(agent) 创建继任 Manager；全部成功后才发布新 Manager、设置和目录快照。构建失败/取消保持旧实例及状态；不请求模型试运行，Runtime 自身不写配置。MCP 工具复用启动发现结果，整个生命周期复用同一个 Saver。HTTP 的模型/思考设置也是进程级且不持久化；与 CLI 一样重建时保留历史和失败保护。HTTP 主动提交不可选等级时拒绝，切模型继承旧等级时允许回退。ApiRuntime 在切换前检查会话忙碌及请求借用计数，切换期间拒绝新会话操作，防止请求尚未进入 Manager 占位就被交接。create_app(manager_factory=...) 保留固定 Manager 嵌入方式，不读取额外模型配置、禁用配置/切换，JSON/SSE 仍可用；runtime_factory 与 manager_factory 不能同时注入。
 
 `run_cli(manager_factory=...)` 和 `OmtApp(runtime_factory=...)` 可注入固定 Manager，此时不读取额外模型配置，不支持运行中切换；也可注入提供 SessionRuntime 的异步工厂。调用方应每次通过 runtime.manager 取得最新实例，不再使用切换前的引用。
 
@@ -92,7 +93,7 @@ SessionSettings 共享 db_path、workspace_path、max_concurrent_runs、skill_ro
 - 启动和 /thinking 展示请求等级、实际 effort 与目录支持的可选等级（始终包含 none）；/thinking <level> 修改当前进程后续轮次使用的强度。缺失/null 映射按 none 并提示，不把请求等级误当成实际 effort。命令不登记会话；重建不丢失当前选择、编号和历史，不绕过失败保护。
 - 普通请求调用 Manager.run(..., event_handler=terminal.print_event)。最终回答已通过事件输出，入口不再次打印 answer；成功轮次由 Manager 刷新 updated_at。
 - 模型/工具失败后允许输入其他命令，但同一会话会被 Manager 标为需恢复，不能盲目重跑；可选择其他会话或退出检查。不再沿用旧 CLI 的失败后直接追加策略。
-- Ctrl-C 在输入与执行阶段均退出整个 CLI。执行时沿用 asyncio.run 默认 SIGINT 取消，Conversation 清理消费任务和流，Manager 先于 Saver 关闭。main 只捕获 KeyboardInterrupt；外部任务取消向上传播，不伪装成正常退出。同步工具线程、外部进程和已经发生的副作用不保证立即停止或撤销。
+- Ctrl-C 在输入与执行阶段均退出整个 CLI。执行时沿用 asyncio.run 默认 SIGINT 取消，Conversation 通过流上下文清理底层执行，Manager 先于 Saver 关闭。main 只捕获 KeyboardInterrupt；外部任务取消向上传播，不伪装成正常退出。同步工具线程、外部进程和已经发生的副作用不保证立即停止或撤销。
 
 CLI 配置和示例见[使用说明](cli.md)，交互证据见[CLI 测试](tests/cli.md)及[/resume 测试](tests/resume.md)。
 
@@ -100,7 +101,7 @@ CLI 配置和示例见[使用说明](cli.md)，交互证据见[CLI 测试](tests
 
 load_system_prompt() 使用 importlib.resources 读取包内 prompts/system.md，与 cwd 无关；资源缺失、非 UTF-8 或纯空白在模型初始化前失败。bootstrap 每次生命周期读取一次，Manager 只在空会话首轮传入 Conversation，与 Skills 目录合并成单条 SystemMessage；不要同时传给 Agent.system_prompt。恢复已有消息不替换原系统规则，也不重新扫描 Skills。
 
-HTTP 显式创建即登记，允许空会话；历史响应只投影用户/助手/工具文本和工具关联，不暴露系统提示词、artifact、模型元数据或检查点。其 JSON 调用默认不绑定过程回调。当前 HTTP 免认证，仅适合可信本机使用；后端及前端代理均不应向不可信网络开放。完整路由、认证现状和错误见[HTTP 使用说明](api.md)。
+HTTP 显式创建即登记，允许空会话；历史响应投影用户/助手/工具正文、可选消息 ID、reasoning 和工具关联，不暴露系统提示词、artifact、完整模型元数据或检查点。JSON 调用默认不绑定过程回调；SSE 通过同一个 Manager.run 安装网络投影回调，不重新编排模型或工具。reasoning 保留在原始检查点消息里，查询时优先标准内容块，旧 DeepSeek 字段只回退、不重复拼接。当前 HTTP 免认证，仅适合可信本机使用；后端及前端代理均不应向不可信网络开放。完整路由、认证现状和错误见[HTTP 使用说明](api.md)。
 
 ## 3. 模型连接与配置
 
@@ -126,7 +127,7 @@ Python 接口兼容性：ProviderConnection/ModelLogin 不再接受 base_url；l
 
 - `load_settings()` 读取 `defaultProvider`、`defaultModel` 和 `defaultThinkingLevel`，拒绝空白选择，并缓存成功结果；主动重载用 `cache_clear()`。`defaultThinkingLevel` 未配置或为 `null` 时按 `"none"` 处理，不再预设 `media` 等思考等级；显式非空等级名由模型目录映射。
 - `load_auth()` 不缓存；按 provider 保存认证类型及可选的 `SecretStr` Key。加载错误不回显文件原文。
-- `load_model_store()` 不缓存；读取 provider 下的 `models`，使用 `id`、`baseUrl`、可选 `provider` 和 `thinkingLevelMap`，校验 HTTP(S) URL 和 ID 唯一性。`thinkingLevelMap` 是等级名到提供商 effort 字符串或 `null` 的映射，非 null 值必须非空；未选模型的缺失映射或 null 等级不影响目录加载。
+- `load_model_store()` 不缓存；读取 provider 下的 `models`，使用 `id`、`baseUrl`、可选 `provider` 和 `thinkingLevelMap`，校验 HTTP(S) URL 和 ID 唯一性。`thinkingLevelMap` 是等级名到提供商 effort 字符串或 `null` 的映射，非 null 值必须非空；未选模型的缺失映射或 null 等级不影响目录加载。ModelDefinition.available_thinking_levels 统一派生展示顺序：none 在首，已声明且非 null 的 low/medium/high/max 按强度排列，自定义名称在后按名称排序，不改映射或持久化字段。运行状态与快捷列表共用该属性，CLI/TUI/HTTP 按返回顺序展示，不再各自按字母排序。
 - 文件采用严格 JSON，不接受尾随逗号。除思考映射外，能力、价格等额外目录字段目前不驱动初始化逻辑。配置文件名沿用 `model-store.json`，不是 `model-stores.json`。
 
 ### 解析与初始化
@@ -192,7 +193,7 @@ SessionManager(agent, store, *, workspace_path, system_prompt, skill_roots, max_
 
 每次 get_history、open_session 或 run 都从最新检查点装载独立 Conversation，不缓存 Runtime 或全局当前会话。无检查点视为空会话；已有状态要求图无待执行节点且最终消息是无工具请求的 AIMessage，未完成或失败会话不伪装成新会话。
 
-get_history 只读取、不刷新修改时间。open_session 返回 LoadedSession(record, messages, warnings)，校验成功后刷新时间；原始消息由 CLI 决定如何显示，Manager 不改变当前选择。run 返回 RunResult(session_id, run_id, answer, warnings)，run_id 不是可查询后台任务。event_handler 只影响本轮，默认 None。
+get_history 只读取、不刷新修改时间。open_session 返回 LoadedSession(record, messages, warnings)，校验成功后刷新时间；原始消息由 CLI 决定如何显示，Manager 不改变当前选择。run 返回 RunResult(session_id, run_id, answer, warnings)，run_id 不是可查询后台任务。event_handler 只影响本轮，默认 None。新增可选同步 on_started(run_id)，仅在占位、归属和历史校验成功后、执行模型前通知；接纳前错误不调用它。HTTP 据此在响应头前区分普通错误，接纳后才发送 run.started。只读 busy/running 是本进程快照，不是持久化状态。
 
 `await manager.rebuild(agent)` 只在没有运行/历史/激活操作时允许交接，要求新 Agent 复用同一个 Checkpointer；创建新的 Manager，保留 Store、目录、提示词、Skills、容量及 `_tainted`，成功后关闭旧 Manager。历史不手动复制，下一轮仍从检查点读取；不登记或激活会话，不刷新索引时间。忙碌时立即拒绝，不取消现有请求。失败集合的交接封装在 Manager 内部，入口和 runtime 不访问其私有字段。
 
@@ -247,11 +248,13 @@ SessionRecord 包含 thread_id、workspace_path、title、created_at、updated_a
 | `stream.output` / `await stream.output()` | 同步属性 / 异步方法；最终状态字典，`["messages"]` 含此次输入历史与执行产生的完整消息 |
 | `context=` | 运行上下文；不是自动发送给模型的对话历史 |
 
-Conversation 通过可选 event_handler 发送 RunEvent（助手文本开始/增量/结束、工具开始/增量/完成/失败、运行失败及 Skills 诊断），默认 None 完全静默。events.py 只定义数据与回调类型；逐行 CLI 的 terminal.print_event 渲染终端，历史由 terminal.display_history 单独展示；TUI 的同步回调只投递 StreamEvent，再由 UI 消息处理器渲染。回调仅限快速同步操作，不支持网络等待或异步背压；事件不是持久化消息，也不是 SSE。Manager 每轮单独绑定回调，不会把 CLI 渲染泄漏到同实例后续 HTTP 操作。
+Conversation 通过可选 event_handler 发送 RunEvent（助手开始/正文增量/reasoning 增量/结束、工具开始/增量/完成/失败、运行失败及 Skills 诊断；附带消息 ID 和工具调用 ID），默认 None 完全静默。events.py 只定义数据与回调类型；逐行 CLI 的 terminal.print_event 渲染终端，历史由 terminal.display_history 单独展示；TUI 的同步回调只投递 StreamEvent，再由 UI 消息处理器渲染。回调仅限快速同步操作，不支持网络等待或异步背压；事件不是持久化消息，也不是 SSE。Manager 每轮单独绑定回调，不会把 CLI 渲染泄漏到同实例后续 HTTP 操作。
 
-Conversation 同步路径用 `interleave("messages", "tool_calls")` 同时订阅模型和工具通道。当前依赖的异步流没有 `interleave()`，异步路径先订阅两个通道，再通过两个消费任务并行读取；完成后检查原始异常，退出前取消并等待未完成的消费任务，再关闭流。两种路径都显示助手文本、工具参数、工具增量、最终结果和错误，工具终态展示规则共用。不要先耗尽一个通道，再期望未订阅的另一个通道回放全过程。
+Conversation 同步/异步都只订阅一次根图原始事件，由同一 _RunEvents 投影处理 messages/tools，不另建并行消费任务。原因是每工具 output_deltas 为惰性订阅：顺序消费第一个工具时，另一个并行工具可能已输出并结束，之后再订阅会永久丢掉增量。直接消费原始 tools 事件避免该竞态，并按调用 ID 关联开始/进度/终态；退出上下文负责取消和等待底层图执行。根图 messages 的 data 是 (协议片段或完整消息, metadata)，按模型 run_id 维护消息投影，完整 AIMessage 作为兼容回退；不把用户消息、ToolMessage 或旧 token chunk 当成助手完整回答。
 
-处理单个模型或工具句柄时的内部循环会继续推进执行，所以显示逻辑不是所有原始事件严格全序的回放。需要全局原始顺序时应另行设计事件级渲染，而不是把快照全部打印出来。
+每条模型消息按内容块片段顺序分离正文和 reasoning，finish 只补未发尾部，避免重发完整块；同步/异步共用此投影。当前按根图事件投递顺序处理，但不承诺所有并行任务的真实发生时间全序，也不输出所有状态快照或子图事件。网络 seq 仅描述 Adapter 的发送顺序。
+
+HTTP 的 RunStream 只把快速同步回调投影到有限队列，不在 core 回调里等待网络。响应发送限制事件数、编码后字节和单次发送等待时间，超限取消运行，不静默丢弃正文；单独终态和正在发送的帧也有有限额外占用。SSE 序号只表示 Adapter 发送顺序；run.completed 附带权威最终 answer/warnings，run.failed 使用稳定安全错误；内部异常原文、artifact 不直接串行化。无事件时发送注释心跳。响应整体 finally 取消并等待关联运行，覆盖首个 send 失败、发送超时、断线和取消域；JSON 断线仍不保证取消。没有后台继续执行、查询或重连补发。详见 [HTTP 协议](frontend-api.md)与[流式测试](tests/api-runtime-streaming.md)。
 
 过程通知不等于消息：每段 token、工具开始提示、进度片段不一定独立保存在历史中；最终工具返回值才由底层形成工具消息。工具执行由 LangGraph 完成，Conversation 不根据调用请求再次手动执行。
 
@@ -300,7 +303,7 @@ Bash 返回 exit_code、stdout、stderr、timed_out、truncated。非零退出�
 | 工具或 Skill | tools/、tools_manager.py、skills.py | [工具测试](tests/tools.md)、[Skills 测试](tests/skills.md) |
 | 基础系统提示词 | prompts/system.md、prompts/__init__.py、bootstrap.py | [提示词测试](tests/prompts.md)、CLI 集成测试 |
 
-当前不提供 OAuth 登录/刷新、自动恢复上次会话、/sessions 别名、图中断恢复流程、工具沙箱/审批、Bash 实时增量输出或自动 AST 工具发现。HTTP 尚无 SSE、后台任务、取消接口和多用户。底层 Agent 的中断测试通过，不代表应用入口已实现暂停恢复。
+当前不提供 OAuth 登录/刷新、自动恢复上次会话、/sessions 别名、图中断恢复流程、工具沙箱/审批、Bash 实时增量输出或自动 AST 工具发现。HTTP 已支持 SSE 和断线尝试取消，但没有后台任务、独立取消接口、事件补发、按 Session 模型持久化或多用户。底层 Agent 的中断测试通过，不代表应用入口已实现暂停恢复。
 
 源码跟踪注意：当前 .gitignore 的 agent/ 是目录名规则，会匹配 src/omt/agent/。若磁盘可读却未出现在 Git 状态中，运行 git check-ignore -v <path>；不要为提交源码而取消敏感配置忽略保护，更不要提交认证文件。
 

@@ -1,6 +1,6 @@
 # OMT 文档导航
 
-OMT 当前是一个基于 LangChain/LangGraph 的 Agent 应用，CLI 与本机非流式 FastAPI 共用 core 模块，并保留同步调用能力。先理解“组装入口、会话状态、执行图”分别由谁负责，再修改实现。
+OMT 当前是一个基于 LangChain/LangGraph 的 Agent 应用，CLI 与支持 JSON/SSE 的本机 FastAPI 共用 core 模块，并保留同步调用能力。先理解“组装入口、会话状态、执行图”分别由谁负责，再修改实现。
 
 ## 按任务阅读
 

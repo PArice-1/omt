@@ -2,7 +2,7 @@
 
 import asyncio
 import sqlite3
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -92,6 +92,16 @@ class SessionManager:
         self._active: set[asyncio.Task[object]] = set()  # 关闭时需要取消并等待的操作任务。
         self._tainted: set[str] = set()  # 本进程观察到失败/取消、需检查恢复的会话 ID。
         self._closed: bool = False
+
+    @property
+    def busy(self) -> bool:
+        """是否存在运行、历史读取或激活操作；只是展示快照，不是跨进程锁。"""
+        return bool(self._busy or self._active)
+
+    @property
+    def running(self) -> int:
+        """本实例已占位且尚未结束的轮次数。"""
+        return self._running
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -186,17 +196,22 @@ class SessionManager:
 
     async def run(
         self, session_id: str, message: str, *, event_handler: EventHandler | None = None,
+        on_started: Callable[[str], None] | None = None,
     ) -> RunResult:
         """执行指定会话的一轮；event_handler 接收快速同步通知，None 不展示过程。
 
         会话互斥、容量、历史和失败规则与入口无关；接收函数只影响本次执行，
         CLI 可传终端渲染函数，HTTP 可保持静默。取消不保证工具副作用撤销。
+        on_started 在占位和历史校验通过后、调用模型前同步通知 run_id；
+        用于传输层区分接纳前 HTTP 错误与执行中的流内错误，不允许等待网络。
         """
         _ = validate_message(message)
         async with self._operation(session_id, execution=True):
             conversation = await self._load(session_id, event_handler=event_handler)
             run_id = str(uuid4())
             try:
+                if on_started is not None:
+                    on_started(run_id)
                 answer = await conversation.arun(message)
             except asyncio.CancelledError:
                 self._tainted.add(session_id)

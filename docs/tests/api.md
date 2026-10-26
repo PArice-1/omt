@@ -20,11 +20,11 @@
 | 同会话互斥、全局容量 | 异步工具等待期间对同/不同 ID 再次运行；全局上限分别为 1、2 | 同 ID session_busy；满载 capacity_exceeded；上限 2 时其他会话独立完成，不混入第一会话消息 | test_manager_concurrency_cancellation_and_shutdown |
 | 取消与关闭 | 取消等待工具的任务，或调用 Manager.aclose | 工具 finally 执行，任务终止，容量释放；关闭后拒绝新运行，检查点连接在 Manager 清理后退出 | 同上 |
 | 可选访问令牌 | 不提供令牌，或显式提供空字符串、空白、短令牌及旧格式令牌 | 配置均可创建，保留配置原值但 repr 不暴露非空白令牌；仅保留字段兼容，不启用认证 | test_settings_accept_optional_access_token |
-| 启动失败关闭 | 在无需令牌的配置下，数据库缺失、工作目录不匹配或 sessions 表缺失；另用环境变量提供假令牌 | 启动仍失败，不创建空库、不提前读取模型配置；环境变量仍可读取 | test_settings_and_startup_fail_closed |
+| 未配置启动及初始化失败 | 无配置且数据库缺失，或完整假配置但数据库缺失/缺表；另有错误 cwd 和假令牌环境变量 | 无配置可查状态且会话接口 503；初始化失败保留配置入口，不创建空库、不修复缺表；错误 cwd 仍拒绝启动，令牌可读 | test_settings_and_unconfigured_startup |
 | 默认 lifespan 共用组装 | 临时假 settings，SDK 包装对象/MCP 发现为替身，真实默认 bootstrap/Store/Agent/Saver | 应用工厂创建时无模型/MCP 副作用；两轮成功且每个 lifespan 只初始化一次模型/发现；退出后业务请求 503 | test_default_lifespan_builds_dependencies_once_and_cleans_up |
 | MCP 配置和敏感值 | 环境变量提供测试 HTTP MCP 配置，短测试令牌可读取，非法 max_concurrent_runs=0 触发校验失败 | 默认禁用 MCP；显式配置转换为正确 Connection；repr/格式化异常不回显测试令牌及 header，不因免认证取消其他配置校验 | test_mcp_configuration_is_explicit_and_secrets_are_not_rendered |
 
-需求调整说明：当前本机分支已停用令牌长度校验和路由鉴权，并开放 Swagger/OpenAPI，因此原 401、缺令牌启动失败和 docs 404 预期不再适用。测试改为验证匿名调用四个业务接口和可选令牌配置，同时保留消息校验、预建数据库/工作目录拒绝及敏感信息保护；不以删除或跳过失败用例代替契约更新。
+需求调整说明：当前本机分支已停用令牌长度校验和路由鉴权，并开放 Swagger/OpenAPI，因此原 401、缺令牌启动失败和 docs 404 预期不再适用。测试改为验证匿名调用四个业务接口和可选令牌配置，同时保留消息校验、工作目录拒绝及敏感信息保护。API 对缺配置/缺库/缺表改为保留配置入口并报告未就绪；底层 bootstrap 的严格预建库检查不变；不以删除或跳过失败用例代替契约更新。
 
 同会话/全局并发通过公开 Manager Interface 和 asyncio.Event 验证，避免用线程睡眠猜测请求时序。HTTP 层的 409 在失败重试及不完整检查点场景验证；容量错误的映射为固定 429，尚未通过并发真实网络请求验证。
 
@@ -32,7 +32,7 @@
 
 test_cli_and_http_share_one_manager_without_leaking_terminal_output 使用同一事件循环和 Manager：HTTP 创建空会话，CLI /resume 后执行一轮，再由 HTTP 追加。预期同一 ID 的用户/助手四条消息完整且无重复；CLI 回答只打印一次，后续 HTTP 回答没有终端输出。它验证单轮事件回调隔离与共用历史规则，不验证两个独立进程共享锁。
 
-共用配置类型从 api.settings 移至 core.configuration；ApiSettings 及公开 HTTP 字段不变。默认 lifespan 现在委托 bootstrap.open_session_manager，原组装测试仍验证预建库、MCP 类型、工具、系统提示词、关闭后拒绝操作等可观察行为。
+共用配置类型来自 core.configuration。默认 lifespan 现在由 ApiRuntime 委托 bootstrap.open_session_runtime，支持未配置状态和可切换模型；原组装测试补齐三份假配置，继续验证每次生命周期仅初始化一次、MCP/系统提示词及退出清理。注入 manager_factory 的原 JSON/共享 CLI 测试仍验证固定 Manager 兼容，不读取模型配置。首次配置、SSE 与 HTTP 切换另见[运行配置与流式测试](api-runtime-streaming.md)。
 
 ## 隔离方式
 
@@ -53,7 +53,7 @@ basedpyright --pythonpath .venv/bin/python src/omt/api src/omt/cli src/omt/core/
 
 - 不请求真实模型/MCP，不验证网络代理、反向代理、浏览器跨域或实际端口部署。当前接口不提供令牌认证；测试通过不表示服务可以安全暴露到不可信网络。
 - “重启”是同一测试进程中重建应用和 SQLite 连接，不是实际操作系统进程重启；不覆盖多 worker/CLI 争用、持久化运行状态和幂等重试。
-- 不提供/验证 SSE、事件补发、取消 HTTP Interface 或断线后台运行。普通 JSON 断线不保证立即取消。
+- 本文件主要回归原 JSON Interface；SSE 增量、断线取消和发送限制由[专门用例](api-runtime-streaming.md)验证。仍无事件补发、独立取消 HTTP Interface 或断线后台运行；普通 JSON 断线不保证立即取消。
 - Async 工具的清理不证明任意同步工具线程、远程调用或外部进程能立即停止，也不证明工具副作用回滚。
 - 历史字段过滤不等于文本脱敏、目录沙箱或多用户授权；固定工作目录仍有当前系统用户权限。
 - 未覆盖真实磁盘损坏、配额和大负载；请求文本长度校验不是整个 HTTP 请求体的内存限制。

@@ -105,8 +105,8 @@ def _thinking_status(settings: Settings, definition: ModelDefinition) -> Thinkin
     mapping = definition.thinkingLevelMap or {}
     level = settings.defaultThinkingLevel or "none"
     effort = (mapping.get(level) or "none") if level != "none" else "none"
-    levels = tuple(sorted(key for key, value in mapping.items() if key != "none" and value is not None))
-    return ThinkingStatus(settings.defaultProvider, settings.defaultModel, level, effort, ("none", *levels))
+    return ThinkingStatus(settings.defaultProvider, settings.defaultModel, level, effort,
+                          definition.available_thinking_levels)
 
 
 class SessionRuntime:
@@ -136,6 +136,11 @@ class SessionRuntime:
     @property
     def manager(self) -> SessionManager:
         return self._manager
+
+    @property
+    def changing(self) -> bool:
+        """是否正在构建并交接新模型；入口不得向旧 Manager 派发新操作。"""
+        return self._changing
 
     @property
     def thinking(self) -> ThinkingStatus:
@@ -170,8 +175,8 @@ class SessionRuntime:
     def _ensure_can_change(self) -> None:
         if self._closed:
             raise SessionError("manager_closed", "服务正在关闭")
-        if self._changing:
-            raise SessionError("manager_busy", "正在切换模型")
+        if self._changing or self._manager.busy:
+            raise SessionError("manager_busy", "正在切换模型或处理会话操作")
 
     async def _replace_model(self, candidate: Settings, definition: ModelDefinition) -> None:
         self._changing = True

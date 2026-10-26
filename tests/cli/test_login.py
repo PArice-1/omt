@@ -134,7 +134,7 @@ def test_flash_login_imports_levels_and_applies_each_effort(
     models = settings.load_model_store()["deepseek"].models
     assert all(model.thinkingLevelMap == {"low": "low", "high": "high", "max": "max"} for model in models)
     output = capsys.readouterr().out
-    assert "可选等级：none、high、low、max" in output
+    assert "可选等级：none、low、high、max" in output
     assert "none 的请求行为由厂商适配决定" in output
     assert "none 表示不主动设置思考参数" not in output
     assert "当前模型无有效映射" not in output

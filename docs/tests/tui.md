@@ -15,7 +15,7 @@
 | 冷启动与帮助，避免向导、空数据和弹窗串扰 | 配置根不存在；F2，再按其他工具快捷键，Esc；输入 `/help`；Ctrl-Q | 停留登录弹窗，不叠层/清除背景消息；取消返回，帮助正常展示；不创建配置或数据库 | test_missing_configuration_keyboard_help_and_cancel_leave_no_files |
 | 入口兼容，避免改变全部旧协议 | 主入口无参数，或显式 `--plain`；替换界面启动点 | 默认只启动 TUI；plain 只 await 原逐行入口 | test_script_entry_selects_tui_by_default_or_explicit_plain |
 | 命令边界，避免误发送或误退出 | 已连接本地假模型；输入未知斜杠命令、带参数的退出/登录或多余推理参数 | 保持运行和输入内容，安全提示，无用户消息、索引或模型请求；登录行内参数不提交 | test_invalid_commands_do_not_run_model_or_exit |
-| 完整登录、推理与模型切换，避免只测表单 | 本地假目录含 Flash/Pro；真实 core 保存、假 SDK；键盘选厂商/模型、F4，再 F2 | 首次密码输入；自动保存完整目录、创建缺失库但不登记会话；状态变更、SDK 接收正确 effort；再次选厂商不再输入 Key；截图没有假 Key | test_login_thinking_and_model_switch_use_core_without_exposing_key |
+| 完整登录、推理与模型切换，避免只测表单 | 本地假目录含 Flash/Pro；真实 core 保存、假 SDK；键盘选厂商/模型、F4，再 F2 | 首次密码输入；自动保存完整目录、创建缺失库但不登记会话；F4 列表按 none/low/high/max 排列，从 none 下移两项选择 high（更新旧字母序的一次下移预期）；状态变更、SDK 接收正确 effort；再次选厂商不再输入 Key；截图没有假 Key | test_login_thinking_and_model_switch_use_core_without_exposing_key |
 | 查询中的取消，避免后台落盘 | 假目录协程阻塞，输入假 Key 后获取，Esc | 目录协程 finally 执行，退出弹窗，配置根不存在，截图无 Key | test_cancel_directory_fetch_cleans_worker_without_saving |
 | 真实发送、流和恢复，防止 Enter 被编辑器截获或重复回答 | 真实 Manager/Agent/Saver；FakeMessagesListChatModel 调用本地异步工具后回答；Ctrl-J 多行、Enter 发送；新对话再 F3 恢复 | 用户换行原文保留；Markdown 回答仅一次、工具默认折叠；SystemMessage 不显示；一条真实索引，恢复原 ID、历史及工具参数/结果，不重放工具；退出关闭工厂 | test_stream_tool_markdown_multiline_and_history_restore |
 | 工具屏幕缓冲边界，避免大参数绕过上限 | 向真实界面依次投递超过 20000 字符的工具参数、流增量和完成事件 | 参数和输出都仅保留末尾，缓冲不超过 16000 字符；完成状态正确，默认折叠，不创建配置 | test_tool_screen_buffer_limits_parameters_and_stream_output |

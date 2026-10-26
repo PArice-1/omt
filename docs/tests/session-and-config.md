@@ -40,7 +40,7 @@
 
 需求调整说明：思考配置从“默认 media、缺映射即报错”改为“未配置或无对应能力统一按 none 处理”，因此原缺失映射异常测试改为验证可用模型和不发送思考参数；配置语法、字段类型与认证错误的拒绝断言保留。
 
-上述 test_bootstrap.py 用例沿用原 test_get_model/test_get_agent 名称，仅被测函数改为共用 bootstrap 实现。固定模型的 open_session_manager 和可切换的 open_session_runtime 的实际创建/关闭、预建库校验和提示词传递由 [CLI](cli.md)、[推理强度](thinking.md)与 [HTTP](api.md) 集成测试验证；共用启动选项 SessionSettings 的路径/MCP 校验主要在 HTTP 配置与 CLI 配置用例中覆盖。
+上述 test_bootstrap.py 用例沿用原 test_get_model/test_get_agent 名称，仅被测函数改为共用 bootstrap 实现。固定模型的 open_session_manager 和 CLI/HTTP 默认使用的可切换 open_session_runtime 的实际创建/关闭、预建库校验和提示词传递由 [CLI](cli.md)、[推理强度](thinking.md)与 [HTTP](api.md) 集成测试验证；共用启动选项 SessionSettings 的路径/MCP 校验主要在 HTTP 配置与 CLI 配置用例中覆盖。
 
 ## 隔离方式
 

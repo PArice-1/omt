@@ -1,16 +1,18 @@
 """入口无关的会话执行：消费模型/工具事件、校验终态并保留完整历史。"""
 
-import asyncio
+from __future__ import annotations
+
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from langchain.agents.middleware.types import InputAgentState
-from langchain_core.language_models.chat_model_stream import ChatModelStream
 from langchain_core.messages import (
     AIMessage,
+    AIMessageChunk,
     AnyMessage,
+    BaseMessage,
     HumanMessage,
     SystemMessage,
     ToolMessage,
@@ -22,6 +24,125 @@ from omt.agent.agent import Agent
 from . import settings
 from .events import EventHandler, RunEvent
 from .skills import discover_skills, render_skills_prompt
+
+if TYPE_CHECKING:
+    from langchain_protocol.protocol import MessagesData, ToolsData
+    from langgraph.stream import ProtocolEvent
+
+
+class _MessageEvents:
+    """按模型内容块顺序投影正文和 reasoning；finish 只补未发送的尾部。"""
+
+    def __init__(self, emit: EventHandler, message_id: str | None) -> None:
+        self.emit: EventHandler = emit
+        self.message_id: str = message_id or str(uuid4())
+        self.started: bool = False
+        self.parts: dict[tuple[str, int], str] = {}
+
+    def consume(self, event: MessagesData) -> None:
+        if event["event"] == "message-start":
+            if not self.started:
+                self.message_id = event["id"]
+        elif event["event"] == "content-block-delta":
+            delta = event["delta"]
+            if delta["type"] == "text-delta":
+                self.emit_delta("text", event["index"], delta["text"])
+            elif delta["type"] == "reasoning-delta":
+                self.emit_delta("reasoning", event["index"], delta["reasoning"])
+        elif event["event"] == "content-block-finish":
+            block = event["content"]
+            if block["type"] == "text":
+                self._finish("text", event["index"], block["text"])
+            elif block["type"] == "reasoning":
+                self._finish("reasoning", event["index"], block.get("reasoning", ""))
+
+    def _finish(self, kind: Literal["text", "reasoning"], index: int, value: str) -> None:
+        previous = self.parts.get((kind, index), "")
+        if value.startswith(previous):
+            self.emit_delta(kind, index, value[len(previous):])
+
+    def emit_delta(self, kind: Literal["text", "reasoning"], index: int, value: str) -> None:
+        if not value:
+            return
+        if not self.started:
+            self.emit(RunEvent("assistant.started", message_id=self.message_id))
+            self.started = True
+        key = (kind, index)
+        self.parts[key] = self.parts.get(key, "") + value
+        event_kind = "assistant.delta" if kind == "text" else "assistant.reasoning.delta"
+        self.emit(RunEvent(event_kind, text=value, message_id=self.message_id))
+
+    def complete(self) -> None:
+        if self.started:
+            self.emit(RunEvent("assistant.completed", message_id=self.message_id))
+
+
+class _RunEvents:
+    """同步/异步共用的根图原始事件投影，不订阅惰性的每工具子通道。"""
+
+    def __init__(self, emit: EventHandler) -> None:
+        self.emit: EventHandler = emit
+        self.models: dict[str, _MessageEvents] = {}
+        self.tools: dict[str, str] = {}
+
+    def consume(self, event: ProtocolEvent) -> None:
+        # 与原根级 messages/tool_calls 投影保持一致，不混入子图。
+        if event["params"]["namespace"]:
+            return
+        if event["method"] == "messages":
+            # 根图消息通道是 (协议片段或完整消息, metadata)，不是直接的 MessagesData。
+            entry: tuple[MessagesData | BaseMessage, dict[str, object]] = event["params"]["data"]
+            payload, metadata = entry
+            if isinstance(payload, AIMessage) and not isinstance(payload, AIMessageChunk):
+                self._whole_message(payload)
+            elif isinstance(payload, dict):
+                run_id = metadata.get("run_id", "")
+                key = run_id if isinstance(run_id, str) else ""
+                if payload["event"] == "message-start" and payload["role"] == "ai":
+                    self.models[key] = _MessageEvents(self.emit, payload["id"])
+                model = self.models.get(key)
+                if model is not None:
+                    model.consume(payload)
+                    if payload["event"] == "message-finish":
+                        model.complete()
+                        del self.models[key]
+        elif event["method"] == "tools":
+            data: ToolsData = event["params"]["data"]
+            identifier = data["tool_call_id"]
+            if data["event"] == "tool-started":
+                self.tools[identifier] = data["tool_name"]
+                self.emit(RunEvent("tool.started", tool_name=data["tool_name"], data=data.get("input"),
+                                   tool_call_id=identifier))
+            elif data["event"] == "tool-output-delta":
+                self.emit(RunEvent("tool.delta", tool_name=self.tools.get(identifier, identifier),
+                                   data=data["delta"], tool_call_id=identifier))
+            elif data["event"] == "tool-error":
+                self.emit(RunEvent("tool.failed", tool_name=self.tools.pop(identifier, identifier),
+                                   text=data["message"], tool_call_id=identifier))
+            elif data["event"] == "tool-finished":
+                name = self.tools.pop(identifier, identifier)
+                output: object = data["output"]
+                if isinstance(output, ToolMessage) and output.status == "error":
+                    self.emit(RunEvent("tool.failed", tool_name=name, text=output.text, data=output,
+                                       tool_call_id=identifier))
+                else:
+                    self.emit(RunEvent("tool.completed", tool_name=name, data=output,
+                                       tool_call_id=identifier))
+
+    def _whole_message(self, message: AIMessage) -> None:
+        """非原生分片模型可能只返回完整消息；按标准块补发一次，不依赖子通道回放。"""
+        projection = _MessageEvents(self.emit, message.id)
+        blocks = message.content_blocks
+        if not any(block["type"] == "reasoning" for block in blocks):
+            legacy = message.additional_kwargs.get("reasoning_content")
+            if isinstance(legacy, str):
+                projection.emit_delta("reasoning", -1, legacy)
+        for index, block in enumerate(blocks):
+            if block["type"] == "text":
+                projection.emit_delta("text", index, block["text"])
+            elif block["type"] == "reasoning":
+                projection.emit_delta("reasoning", index, block.get("reasoning", ""))
+        projection.complete()
 
 
 class Conversation:
@@ -90,103 +211,23 @@ class Conversation:
         if self._event_handler is not None:
             self._event_handler(event)
 
-    def _execute(
-        self,
-        messages: list[AnyMessage],
-    ) -> dict[str, Any] | None:
-        """消费各次模型调用及工具执行，最终返回图状态而非拼接后的文本。"""
+    def _execute(self, messages: list[AnyMessage]) -> dict[str, Any] | None:
+        """单次订阅根图原始事件，避免并行工具在子通道订阅前丢失进度。"""
         input_state: InputAgentState = {"messages": [*messages]}
-        with self.agent.stream_event(
-            input=input_state,
-            config=self.config,
-        ) as stream:
-            # 同时订阅两个通道，避免先消费完一个而错过另一个。
-            for channel, item in stream.interleave("messages", "tool_calls"):
-                if channel == "messages":
-                    model_stream: ChatModelStream = item
-                    has_text = False
-                    for text in model_stream.text:
-                        if not text:
-                            continue
-                        if not has_text:
-                            self._emit(RunEvent("assistant.started"))
-                            has_text = True
-                        self._emit(RunEvent("assistant.delta", text=text))
-                    if has_text:
-                        self._emit(RunEvent("assistant.completed"))
-
-                elif channel == "tool_calls":
-                    self._emit(RunEvent("tool.started", tool_name=item.tool_name, data=item.input))
-
-                    # 即使没有接收函数，也必须消费此通道，等待工具完成。
-                    for delta in item.output_deltas:
-                        self._emit(RunEvent("tool.delta", tool_name=item.tool_name, data=delta))
-
-                    self._emit_tool_result(item.tool_name, item.output, item.error)
-
+        projection = _RunEvents(self._emit)
+        with self.agent.stream_event(input=input_state, config=self.config) as stream:
+            for event in stream:
+                projection.consume(event)
             return stream.output
 
-    async def _aexecute(
-        self,
-        messages: list[AnyMessage],
-    ) -> dict[str, Any] | None:
-        """并行消费异步模型与工具通道，退出前回收所有消费任务和图流。"""
+    async def _aexecute(self, messages: list[AnyMessage]) -> dict[str, Any] | None:
+        """单一消费者保持事件顺序；取消时由图流上下文回收底层执行。"""
         input_state: InputAgentState = {"messages": [*messages]}
-        async with await self.agent.astream_event(
-            input=input_state,
-            config=self.config,
-        ) as stream:
-            # 异步 v3 暂无 interleave；推进图之前先订阅两个通道，防止丢事件。
-            model_calls = aiter(stream.messages)
-            tool_calls = aiter(stream.tool_calls)
-
-            async def consume_messages() -> None:
-                async for model_stream in model_calls:
-                    has_text = False
-                    async for text in model_stream.text:
-                        if not text:
-                            continue
-                        if not has_text:
-                            self._emit(RunEvent("assistant.started"))
-                            has_text = True
-                        self._emit(RunEvent("assistant.delta", text=text))
-                    if has_text:
-                        self._emit(RunEvent("assistant.completed"))
-
-            async def consume_tools() -> None:
-                async for item in tool_calls:
-                    self._emit(RunEvent("tool.started", tool_name=item.tool_name, data=item.input))
-                    async for delta in item.output_deltas:
-                        self._emit(RunEvent("tool.delta", tool_name=item.tool_name, data=delta))
-                    self._emit_tool_result(item.tool_name, item.output, item.error)
-
-            tasks = [
-                asyncio.create_task(consume_messages()),
-                asyncio.create_task(consume_tools()),
-            ]
-            try:
-                # 两个通道都读完再抛原异常，避免另一个通道的工具失败通知被取消。
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for result in results:
-                    if isinstance(result, BaseException):
-                        raise result
-                return await stream.output()
-            finally:
-                for task in tasks:
-                    if not task.done():
-                        _ = task.cancel()
-                _ = await asyncio.gather(*tasks, return_exceptions=True)
-
-    def _emit_tool_result(
-        self, tool_name: str, output: object, error: str | None
-    ) -> None:
-        """同步和异步路径使用相同的工具成功/失败事件。"""
-        if error is not None:
-            self._emit(RunEvent("tool.failed", tool_name=tool_name, text=error))
-        elif isinstance(output, ToolMessage) and output.status == "error":
-            self._emit(RunEvent("tool.failed", tool_name=tool_name, text=output.text, data=output))
-        else:
-            self._emit(RunEvent("tool.completed", tool_name=tool_name, data=output))
+        projection = _RunEvents(self._emit)
+        async with await self.agent.astream_event(input=input_state, config=self.config) as stream:
+            async for event in stream:
+                projection.consume(event)
+            return await stream.output()
 
     def _commit_result(self, result: dict[str, Any] | None) -> str:
         """只在拿到无待执行工具的最终 AIMessage 后替换历史，返回最后回答。"""

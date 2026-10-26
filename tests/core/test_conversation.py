@@ -507,7 +507,7 @@ def test_run_does_not_return_tool_output_or_pending_request_as_final_answer(
 def test_missing_final_state_does_not_commit_user_message(monkeypatch):
     agent = Agent(FakeListChatModel(responses=["未使用"]))
     stream = Mock()
-    stream.interleave.return_value = iter(())
+    stream.__iter__ = Mock(return_value=iter(()))
     stream.output = None
     context = Mock()
     context.__enter__ = Mock(return_value=stream)

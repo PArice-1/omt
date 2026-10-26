@@ -141,7 +141,9 @@ def test_first_configuration_is_preview_then_confirm_and_runs(config: ApiSetting
         status = client.get("/api/v1/runtime").json()
         assert status["configured"] is False and status["ready"] is False
         assert client.get("/api/v1/models").json() == []
-        assert client.get("/api/v1/providers").json() == [{"provider": "deepseek", "logged_in": False}]
+        assert client.get("/api/v1/providers").json() == [
+            {"provider": "deepseek", "logged_in": False}, {"provider": "ollama", "logged_in": False},
+        ]
         assert not settings.root.exists() and not config.db_path.exists() and not sdk
         assert client.post("/api/v1/sessions", json={}).json()["error"]["code"] == "runtime_not_ready"
         login_id = preview(client)

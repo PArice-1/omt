@@ -11,7 +11,7 @@
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
-| 首次完整配置 | 无配置无库；查状态/厂商/快捷列表，预览后先选非法模型再确认合法项 | 未确认不创建配置/数据库、不初始化 SDK；非法选择 422；确认保存完整目录、初始化缺失库并立即可运行；确认响应、GET runtime 和快捷目录都按 none/low/high/max 返回可选等级；修复旧字母排序，与 CLI 一致；预览不可重复使用；响应不含 Key | test_first_configuration_is_preview_then_confirm_and_runs |
+| 首次完整配置 | 无配置无库；查状态/厂商/快捷列表，预览后先选非法模型再确认合法项 | 未确认不创建配置/数据库、不初始化 SDK；无配置时精确枚举已注册的 deepseek/ollama 且均未登录（Ollama 新注册不改变现有凭据契约）；非法选择 422；确认保存完整目录、初始化缺失库并立即可运行；确认响应、GET runtime 和快捷目录都按 none/low/high/max 返回可选等级；修复旧字母排序，与 CLI 一致；预览不可重复使用；响应不含 Key | test_first_configuration_is_preview_then_confirm_and_runs |
 | 预览过期、限额及错误 | 限额 1、TTL 2 的临时配置；测试时钟推进；目录查询失败、空白 Key、额外地址字段 | 达上限 429；过期及重建应用后的旧 ID 404；网络/输入错误安全，不落盘、不泄露假秘密 | test_preview_limits_expiry_and_errors_do_not_persist |
 | 查询中的预览也限额 | 第一请求在本地 Event 等待，再申请第二份；取消第一请求 | 第二请求立即 429；取消释放名额，之后预览成功，始终未保存 | test_inflight_previews_are_limited_and_cancellation_releases_slot |
 | 保存与启用分别报告 | 首次确认保存后 SDK 构建抛含假秘密的异常 | 200，configuration_saved=true、runtime_ready=false、error 非空；磁盘默认可读，服务保留配置入口，错误不含秘密 | test_confirmation_reports_saved_but_not_enabled |

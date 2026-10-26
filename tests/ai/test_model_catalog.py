@@ -32,7 +32,7 @@ def test_catalog_uses_provider_default_or_explicit_low_level_prefix(
     assert request.get_header("Authorization") == "Bearer fake-api-key"
     assert opener.open.call_args.kwargs["timeout"] == 10
     assert response.closed
-    assert supported_providers() == ("deepseek",)
+    assert supported_providers() == ("deepseek", "ollama")
 
 
 @pytest.mark.parametrize("payload", [b'{"data":[]}', b'{"data":[{"id":42}]}',

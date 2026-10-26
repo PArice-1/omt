@@ -16,7 +16,7 @@ OMT 基于 LangChain / LangGraph 构建：由模型与工具循环完成任务�
 - **Skills 发现**：发现可信目录中的 `SKILL.md`，将名称、描述和路径提供给模型，由模型按需读取正文。
 - **共用核心**：CLI 与 API 共用模型配置、工具组装和会话管理逻辑。
 
-当前模型提供商仅注册了 **DeepSeek**；增加其他提供商需要扩展代码，并非修改配置即可支持任意模型。
+当前模型提供商已注册 **DeepSeek** 和 **Ollama**。Ollama 底层适配使用 `langchain-ollama` 的原生本地推理协议，默认地址为 `http://localhost:11434`，支持无 Key 的 Python 初始化及已下载模型查询；CLI/HTTP 首次配置仍沿用原有 API Key 契约，尚未增加免 Key 配置流程。增加其他提供商仍需要扩展代码，并非修改配置即可支持任意模型。
 
 ## 快速开始
 
@@ -49,8 +49,9 @@ CLI 与 API 共用以下三个文件，默认从用户目录读取，而不是�
 
 ```text
 You> /login
-支持的厂商：deepseek
+支持的厂商：deepseek、ollama
 1. deepseek（未登录）
+2. ollama（未登录）
 provider（编号或名称）> deepseek
 api_key> （隐藏输入，仅首次需要）
 1. <厂商返回的模型 ID-A>

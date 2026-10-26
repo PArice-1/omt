@@ -8,6 +8,7 @@ from langchain_core.language_models import BaseChatModel
 from pydantic import HttpUrl, SecretStr, ValidationError
 
 from .models.deepseek import DEEPSEEK_BASE_URL, DEEPSEEK_THINKING_LEVEL_MAPS, deepseek_init, list_deepseek_models
+from .models.ollama import OLLAMA_BASE_URL, list_ollama_models, ollama_init
 
 
 class ModelCatalogLoader(Protocol):
@@ -32,6 +33,7 @@ class ModelProvider:
 models: dict[str, ModelProvider] = {
     "deepseek": ModelProvider(initialize=deepseek_init, list_models=list_deepseek_models,
                               base_url=DEEPSEEK_BASE_URL, thinking_level_maps=DEEPSEEK_THINKING_LEVEL_MAPS),
+    "ollama": ModelProvider(initialize=ollama_init, list_models=list_ollama_models, base_url=OLLAMA_BASE_URL),
 }
 
 

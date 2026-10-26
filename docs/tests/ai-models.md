@@ -10,6 +10,8 @@
 - [models_manager.py](../../src/omt/ai/models_manager.py)
 - [models/deepseek.py](../../src/omt/ai/models/deepseek.py)
 
+Ollama 原生本地适配的无 Key 初始化、目录、思考选项与真实 SDK 离线协议验证另见 [Ollama 测试](ollama.md)；共用注册表现包含 DeepSeek/Ollama，DeepSeek 旧调用链不变。
+
 测试文件沿用 [test_ai.py](../../tests/ai/test_ai.py) 名称，但实际导入对象是 `omt.ai.model.Model`；不要根据旧名称恢复已移走的 ai.py 模块。
 
 ## 场景
@@ -59,5 +61,5 @@ uv run pytest -q tests/ai --tb=no
 ## 覆盖限制
 
 - 不证明真实 DeepSeek 服务接受某个模型名或 effort，也不验证账单、速率限制、网络重试或输出质量。适配参考 [DeepSeek 思考模式协议](https://api-docs.deepseek.com/guides/thinking_mode/)；只有已知支持关闭的模型显式传 none 才构造关闭参数，旧/未知模型仍省略该参数，None 仍沿用服务端配置。
-- 目前只有 DeepSeek 注册项；其他提供商和 OAuth 未覆盖。
+- 本页主要覆盖 DeepSeek；厂商列表回归已更新为 DeepSeek/Ollama 两项，Ollama 专项见独立说明。其他提供商和 OAuth 未覆盖。
 - 会话如何从多个配置文件选择参数，由 [Session 与配置测试](session-and-config.md) 验证。

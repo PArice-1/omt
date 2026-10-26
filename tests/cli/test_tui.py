@@ -15,7 +15,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from textual.pilot import Pilot
-from textual.widgets import Button, Input, Select, Static
+from textual.widgets import Button, Input, OptionList, Select, Static
 
 from omt.agent.agent import Agent
 from omt.cli.app import main
@@ -160,7 +160,11 @@ def test_login_thinking_and_model_switch_use_core_without_exposing_key(
             assert sdk.call_args.kwargs["reasoning_effort"] == "high"
             await pilot.press("f4")
             assert isinstance(app.screen, ChoiceScreen)
-            await pilot.press("down", "enter")
+            options = app.screen.query_one(OptionList)
+            assert [options.get_option_at_index(index).id for index in range(options.option_count)] == [
+                "none", "low", "high", "max",
+            ]
+            await pilot.press("down", "down", "enter")
             await idle(pilot, app)
             assert sdk.call_args.kwargs["reasoning_effort"] == "high"
             await pilot.press("f2")

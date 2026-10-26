@@ -78,6 +78,32 @@ class ProviderLogin:
 
 
 @dataclass(frozen=True)
+class ConfiguredModel:
+    """可快速切换的本地模型；有凭据不代表远程 Key 有效或模型可达。"""
+
+    provider: str
+    model: str
+    available_levels: tuple[str, ...]
+
+
+def list_configured_models() -> list[ConfiguredModel]:
+    """列出已保存 API 凭据的注册厂商下全部本地模型，不联网、不改配置。"""
+    documents = _load_documents()
+    result: list[ConfiguredModel] = []
+    for provider in supported_providers():
+        if _stored_api_key(documents, provider) is None:
+            continue
+        catalog = documents.providers.get(provider)
+        if catalog is None:
+            continue
+        for definition in catalog.models:
+            if definition.provider not in (None, provider):
+                continue
+            result.append(ConfiguredModel(provider, definition.id, definition.available_thinking_levels))
+    return sorted(result, key=lambda item: (item.provider, item.model))
+
+
+@dataclass(frozen=True)
 class LoginResult:
     """已自动保存的默认模型选择；是否已切换运行实例由入口另行处理。"""
 

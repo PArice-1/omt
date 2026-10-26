@@ -44,7 +44,7 @@
 | --- | --- | --- | --- |
 | 无模型启动 | 无配置无库，输入普通消息、/resume、/thinking、/exit | 只提示登录，不初始化 SDK、不生成文件、不执行消息 | test_missing_configuration_enters_cli_and_only_prompts_login_without_writes |
 | 首次简化登录后对话 | /LoGiN、厂商、Key、flash、普通消息 | 不问 URL/查询/确认；导入 flash/pro，SDK 收到选择和厂商地址，能立即回答；仅普通消息登记会话，不打印 Key | test_first_login_only_asks_provider_key_and_model_and_saves_full_catalog |
-| Flash 能力导入与 SDK 参数 | 无配置，或启动时已有无映射的 Flash；/login 后依次切换 low/high/max/none | 新旧两种路径均补全完整目录映射，可选等级包含三档；SDK 实际收到 low/high/max/none，none 携带 disabled thinking；不再显示“无有效映射”或旧的省略参数提示 | test_flash_login_imports_levels_and_applies_each_effort |
+| Flash 能力导入与 SDK 参数 | 无配置，或启动时已有无映射的 Flash；/login 后依次切换 low/high/max/none | 新旧两种路径均补全完整目录映射，可选等级按 none/low/high/max 排列，不再按字母把 high 放到 low 前；SDK 实际收到 low/high/max/none，none 携带 disabled thinking；不再显示“无有效映射”或旧的省略参数提示 | test_flash_login_imports_levels_and_applies_each_effort |
 | 再次选择模型 | 已登录厂商，输入厂商编号和 pro 编号 | 显示已登录；仅两次输入，不索取 Key；认证字节不变、默认切 pro | test_logged_in_provider_only_asks_model_and_keeps_credentials_unchanged |
 | 对话中切模型 | 先完成一轮 Flash，再 /login 选 Pro，继续第二轮 | SDK 分别初始化 Flash/Pro，新模型收到完整、无重复的历史；仅一条会话记录，默认选择更新 | test_login_switches_running_model_and_preserves_one_session_history |
 | 只登录退出 | 首次成功登录后 /exit | 可生成配置和缺失库，不登记空会话、不发送聊天请求 | test_login_command_itself_never_registers_empty_session |
@@ -80,6 +80,6 @@ basedpyright --pythonpath .venv/bin/python src/omt/core/model_configuration.py s
 ## 覆盖限制
 
 - 不证明真实服务可达、Key 有效、远程 ID 支持工具调用或某种 effort；second 是测试适配，不代表真实支持该厂商。
-- 仅 API Key、每厂商一份，不实现 OAuth、自动凭据刷新、独立 /model 或 HTTP 登录端点。“已登录”不验证 Key 有效期，刷新失败使用缓存不保证后续聊天成功。
+- 仅 API Key、每厂商一份，不实现 OAuth 或自动凭据刷新；本组不覆盖 HTTP 预览/确认端点，另见 [HTTP 运行配置测试](api-runtime-streaming.md)。只读快捷列表的正常、无凭据和厂商过滤见[核心快捷目录测试](reasoning-and-model-choices.md)。“已登录”不验证 Key 有效期，刷新失败使用缓存不保证后续聊天成功。
 - 配置逐文件原子替换，没有跨文件/数据库/Runtime 事务和跨进程锁；不模拟断电、磁盘满或并行登录。选择保存后 Runtime 失败的区别由专门回归覆盖。
 - 显式数据库初始化不修复已有库；0600 仅 POSIX 检查，内存终端不覆盖所有真实 TTY。

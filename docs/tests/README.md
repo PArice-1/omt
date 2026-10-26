@@ -14,6 +14,8 @@
 | [Textual TUI 交互与生命周期](tui.md) | [test_tui.py](../../tests/cli/test_tui.py)、[test_tui_input.py](../../tests/cli/test_tui_input.py) |
 | [CLI 入口、终端与生命周期](cli.md) | [test_app.py](../../tests/cli/test_app.py)、[test_terminal.py](../../tests/cli/test_terminal.py)、[test_lifecycle.py](../../tests/cli/test_lifecycle.py) |
 | [HTTP 与会话管理](api.md) | [test_api.py](../../tests/api/test_api.py) |
+| [HTTP 运行配置与 SSE](api-runtime-streaming.md) | [test_runtime_streaming.py](../../tests/api/test_runtime_streaming.py) |
+| [核心 reasoning 与快捷模型目录](reasoning-and-model-choices.md) | [test_reasoning.py](../../tests/core/test_reasoning.py)、[test_model_choices.py](../../tests/core/test_model_choices.py) |
 | [SQLite 会话索引](store.md) | [test_store.py](../../tests/core/test_store.py) |
 | [CLI /resume 会话选择与恢复](resume.md) | [test_resume.py](../../tests/cli/test_resume.py) |
 | [模型配置与共用组装](session-and-config.md) | [test_bootstrap.py](../../tests/core/test_bootstrap.py)、[test_settings.py](../../tests/core/test_settings.py)、[test_configuration_files.py](../../tests/core/test_configuration_files.py) |

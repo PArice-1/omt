@@ -3,7 +3,7 @@
 from typing import ClassVar
 from pathlib import Path
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr
 from pydantic_settings import SettingsConfigDict
 
 from omt.core.configuration import SessionSettings
@@ -15,13 +15,15 @@ class ApiSettings(SessionSettings):
         hide_input_in_errors=True,
     )
 
-    # 默认空值仍经过校验，未配置令牌时启动失败，不存在匿名回退。
+    # 当前仅可信本机使用，access_token 保留兼容但不启用鉴权。
     skill_roots: list[Path] | None = Field(default=[Path("~/.agents/skills").expanduser().resolve()])
     access_token: SecretStr = Field(default_factory=lambda: SecretStr(""))
 
-    # @field_validator("access_token")
-    # @classmethod
-    # def check_token(cls, value: SecretStr) -> SecretStr:
-    #     if len(value.get_secret_value().strip()) < 32:
-    #         raise ValueError("访问令牌至少需要 32 个非首尾空白字符")
-    #     return value
+    # SSE 单条/积压按编码后字节计量；到达上限中止，不截断正文。
+    stream_buffer_events: int = Field(default=256, ge=1)
+    stream_buffer_bytes: int = Field(default=1048576, ge=1024)
+    stream_send_timeout: float = Field(default=30.0, gt=0)
+    stream_heartbeat: float = Field(default=15.0, gt=0)
+    # 配置预览含凭据，只在当前进程内存保留；查询中的预览也占名额。
+    login_preview_ttl: int = Field(default=600, ge=1)
+    login_preview_limit: int = Field(default=8, ge=1)

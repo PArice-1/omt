@@ -343,24 +343,43 @@ def test_settings_accept_optional_access_token(token: str | None) -> None:
         assert token not in repr(configured)
 
 
-def test_settings_and_startup_fail_closed(
+def test_settings_and_unconfigured_startup(
     options: ApiSettings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OMT_API_ACCESS_TOKEN", TOKEN)
     assert ApiSettings().access_token.get_secret_value() == TOKEN
-    # 默认组装必须在读取真实配置前拒绝缺库、缺表和错误 cwd。
-    for update in ({"db_path": tmp_path / "missing.sqlite"}, {"workspace_path": tmp_path / "other"}):
-        invalid = options.model_copy(update=update)
-        with pytest.raises((FileNotFoundError, ValueError)):
-            with TestClient(create_app(invalid)):
-                pytest.fail("不应启动")
-    assert not (tmp_path / "missing.sqlite").exists()
+    missing = options.model_copy(update={"db_path": tmp_path / "missing.sqlite"})
+    with TestClient(create_app(missing)) as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/api/v1/runtime").json()["ready"] is False
+        assert client.post("/api/v1/sessions", json={}).status_code == 503
+    assert not missing.db_path.exists()
+    with pytest.raises(ValueError):
+        with TestClient(create_app(options.model_copy(update={"workspace_path": tmp_path / "other"}))):
+            pytest.fail("错误工作目录不得启动")
+
+    # 配置齐全但数据库缺失/缺表时保留配置入口，不自动建库或修复。
+    directory = settings_module.root / "agent"
+    directory.mkdir(parents=True)
+    (directory / "settings.json").write_text(json.dumps({
+        "defaultProvider": "deepseek", "defaultModel": "test-model",
+    }), encoding="utf-8")
+    (directory / "auth.json").write_text(json.dumps({
+        "deepseek": {"type": "api_key", "key": "test-only-key"},
+    }), encoding="utf-8")
+    (directory / "model-store.json").write_text(json.dumps({
+        "deepseek": {"models": [{"id": "test-model", "baseUrl": "https://example.test"}]},
+    }), encoding="utf-8")
+    with TestClient(create_app(missing)) as client:
+        assert client.get("/api/v1/runtime").json()["configured"] is True
+        assert client.get("/api/v1/runtime").json()["ready"] is False
+    assert not missing.db_path.exists()
     with closing(sqlite3.connect(options.db_path)) as connection:
         _ = connection.execute("DROP TABLE sessions")
         connection.commit()
-    with pytest.raises(sqlite3.OperationalError):
-        with TestClient(create_app(options)):
-            pytest.fail("缺少表时不应读取真实模型配置")
+    with TestClient(create_app(options)) as client:
+        assert client.get("/api/v1/runtime").json()["ready"] is False
+        assert client.get("/api/v1/providers").status_code == 200
 
 
 def test_default_lifespan_builds_dependencies_once_and_cleans_up(
@@ -370,6 +389,12 @@ def test_default_lifespan_builds_dependencies_once_and_cleans_up(
     directory.mkdir(parents=True)
     _ = (directory / "settings.json").write_text(json.dumps({
         "defaultProvider": "deepseek", "defaultModel": "test-model",
+    }), encoding="utf-8")
+    (directory / "auth.json").write_text(json.dumps({
+        "deepseek": {"type": "api_key", "key": "test-only-key"},
+    }), encoding="utf-8")
+    (directory / "model-store.json").write_text(json.dumps({
+        "deepseek": {"models": [{"id": "test-model", "baseUrl": "https://example.test"}]},
     }), encoding="utf-8")
     # 每轮使用独立消息，避免假模型循环复用已分配 ID 的对象替换旧历史。
     model = LocalModel(responses=[AIMessage(content="本地回答"), AIMessage(content="本地回答")])

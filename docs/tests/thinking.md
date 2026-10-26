@@ -10,7 +10,7 @@
 
 | 场景 | 输入 / 前置条件 | 预期结果 | 对应测试 |
 | --- | --- | --- | --- |
-| 显示与成功切换 | 未配置初始等级；先执行一轮，再输入首尾空白/大小写混合的 /THINKING high，目录 high→max，随后继续第二轮 | 初始实际值 none，切换后 max；列出 none/high/low，不列 null 能力；第二轮使用另一假模型，收到完整且不重复的上一轮历史；索引仍只有一条；原 settings.json 和成功缓存不变 | test_cli_switch_rebuilds_and_preserves_history |
+| 显示与成功切换 | 未配置初始等级；先执行一轮，再输入首尾空白/大小写混合的 /THINKING high，目录 high→max，随后继续第二轮 | 初始实际值 none，切换后 max；按 none/low/high 顺序列出，不列 null 能力；修复先前字母排序把 high 放在 low 前的问题；第二轮使用另一假模型，收到完整且不重复的上一轮历史；索引仍只有一条；原 settings.json 和成功缓存不变 | test_cli_switch_rebuilds_and_preserves_history |
 | 从有效等级切到 none | 初始 high→max 并执行一轮，随后 /thinking none 再继续 | 再次初始化 SDK，既不发送 reasoning_effort 也不保留旧 extra_body.thinking；新模型实际执行下一轮 | test_switch_to_none_does_not_keep_previous_thinking_options |
 | 只执行命令 | /thinking、参数过多、/thinking none 或 media/unsupported，最后退出 | 命令不进入模型、不登记会话；参数错误提示用法；不存在/null 映射按 none 并明确提示；同一请求等级不重复初始化 | test_thinking_commands_do_not_create_sessions_and_use_none |
 | 重建失败 | SDK 初始化或 Agent 组装的第二次调用抛含测试敏感标记的异常 | 保留旧 Manager 与显示状态；后续普通消息仍由旧模型回答；提示失败但不显示 SDK 异常原文 | test_switch_failure_keeps_old_manager_and_status |

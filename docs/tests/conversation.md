@@ -59,7 +59,7 @@ Conversation 接收现成 Agent、可选 config、基础提示词、Skills 搜�
 | 模型中途失败 | 先成功一轮，后续模型输出部分文本再抛异常 | 原异常传播并展示，历史保留上一轮，不提交部分文本 | test_arun_failure_preserves_previous_history_and_original_error |
 | 工具失败 | 异步工具抛异常，或返回 status=error 的 ToolMessage | 均显示工具失败、不显示完成；未处理异常保留原对象且不提交回合，已处理错误保留工具消息和最终解释 | test_arun_displays_tool_failures_without_reporting_success |
 | 不完整终态 | None、空 messages、工具结果或待执行工具请求作为最后消息 | 不冒充最终回答，不覆盖旧历史 | test_arun_incomplete_final_state_does_not_commit_history |
-| 取消与清理 | 本地异步工具进入等待后取消 arun 任务 | CancelledError 向外传播，工具 finally 执行，无遗留消费任务，初始历史不变，不打印普通执行失败 | test_arun_cancellation_cleans_up_tool_and_consumers_without_committing_history |
+| 取消与清理 | 本地异步工具进入等待后取消 arun 任务 | CancelledError 向外传播，工具 finally 执行，图流清理完成（当前不额外创建消费者任务），初始历史不变，不打印普通执行失败 | test_arun_cancellation_cleans_up_tool_and_consumers_without_committing_history |
 | 同步/异步交替 | 同一会话按 run → arun → run 顺序执行 | 共享完整历史，三轮不丢失、不重复 | test_sync_and_async_turns_share_history |
 
 ## 按 thread_id 切换会话
@@ -92,7 +92,9 @@ events.py 仅定义 RunEvent 和 EventHandler；Conversation 的 event_handler �
 | 默认静默 | 不传 event_handler 的 Conversation，存在无效 Skill 诊断并执行完整一轮 | 返回回答并保存历史，stdout/stderr 均为空 | test_conversation_is_silent_by_default |
 | 静默恢复 | 内存 Checkpointer 中已完成的会话，load_history(thread_id) | 完整消息成功加载，不打印历史，不执行新模型请求 | test_load_history_can_restore_without_displaying_history |
 
-事件类型见 [events.py](../../src/omt/core/events.py)，渲染见 [terminal/](../../src/omt/cli/terminal/)。本组不保证所有并发事件的全局顺序，不验证网络传输。显式输出及异常/取消清理继续由原有用例回归，HTTP 使用 None 的完整链路另见 [HTTP 测试](api.md)。
+本次扩展在共用 RunEvent 增加 assistant.reasoning.delta、message_id、tool_call_id，原 assistant.delta 保持供 CLI 使用；API Adapter 把它命名为 assistant.text.delta。正文和 reasoning 同时从单条模型的内容块事件投影，finish 仅补未发送尾部；原事件与静默执行测试继续覆盖。新增同步/异步分片和完整块用例见[核心 reasoning 测试](reasoning-and-model-choices.md)。
+
+事件类型见 [events.py](../../src/omt/core/events.py)，渲染见 [terminal/](../../src/omt/cli/terminal/)。本组不保证所有并发事件的真实发生时间全序，不验证网络传输。本次执行层改为单次消费根图原始 messages/tools 事件，消除并行工具的惰性子通道订阅丢进度；缺失终态用例的替身改为支持原始迭代，仍断言不提交失败用户回合。确定性并行进度回归见[核心 reasoning 与事件测试](reasoning-and-model-choices.md)。显式输出及异常/取消清理继续由原有用例回归，HTTP 使用 None 的完整链路另见 [HTTP 测试](api.md)。
 
 ## 隔离方式
 
@@ -115,7 +117,7 @@ uv run pytest -q tests/core/test_conversation.py tests/core/test_conversation_hi
 - 历史展示不是敏感信息过滤器：用户/助手文本、工具参数与可显示结果按原内容输出；不验证多媒体渲染或真实终端排版。终端写入错误不回滚已经完成的会话切换。
 - UUID 测试只验证格式、实例差异和复用，不构成持久化方案。
 - “失败保留旧历史”只指 Session 已提交的内存列表，不表示工具副作用或外部检查点自动回滚。
-- 输出顺序验证针对确定的本地执行链，不验证所有并发工具或原始事件的全局时间顺序；异步两个消费任务的打印顺序不作全局全序保证。
-- 未验证同一 Session 的并发 run/arun；当前设计用于顺序调用。异步执行的两个消费任务不等于允许并发提交回合。
+- 输出顺序验证针对确定的本地执行链，不验证所有并发工具或原始事件的全局时间顺序；根图已投递事件的处理顺序不代表所有并行任务的真实发生时间。
+- 未验证同一 Session 的并发 run/arun；当前设计用于顺序调用。图内部工具并行不等于允许并发提交回合。
 - 假模型按测试预设调用 read，验证的是加载和历史链路，不证明真实模型一定会自主选择正确 Skill。
 - 不提供提示词或 Skills 热重载，也不负责外部提示词文件读取或工具沙箱；启用默认项目 Skills 前应确认目录可信。

@@ -9,7 +9,7 @@ OMT 基于 LangChain / LangGraph 构建：由模型与工具循环完成任务�
 ## 功能
 
 - **交互式 TUI**：Textual 全屏聊天、Markdown、折叠工具输出和模型/会话/推理选择；`--plain` 保留逐行界面。
-- **本机 HTTP API**：创建会话、查询历史和执行一轮对话；当前本机分支无需 Bearer 认证，采用非流式响应。
+- **本机 HTTP API**：首次配置模型、临时切换模型/思考等级、创建会话及查询历史；保留 JSON 响应并支持正文/reasoning/工具 SSE 事件。当前免 Bearer 认证。
 - **持久化会话**：使用 SQLite 保存会话索引和 LangGraph 检查点；CLI 可通过 `/resume` 恢复已完成的历史会话。
 - **内置工具**：提供 `read`、`write`、`edit` 和 `bash`，支持文件读取、写入、精确替换及命令执行。
 - **MCP 扩展**：通过启动配置接入 `stdio` 或 `streamable_http` MCP 服务。
@@ -188,7 +188,7 @@ uv run --project /absolute/path/to/OMT omt
 
 ## HTTP API
 
-完成模型配置和数据库初始化后，在目标工作目录启动：
+在可信目标工作目录启动；未配置时也可通过 API 预览并确认模型，首次确认后初始化缺失数据库：
 
 ```bash
 # 当前本机分支无需配置访问令牌。
@@ -197,7 +197,7 @@ uv run omt-api
 
 默认监听 `127.0.0.1:8000`，使用单 worker。API 默认不启用 MCP；当前已暂时停用访问令牌校验，即使配置令牌也不会自动恢复认证。模型 API Key 仍需配置。后端及前端代理均只应面向可信本机使用，不要向不可信网络开放。
 
-可以先检查服务并创建会话：
+先通过 `GET /api/v1/runtime` 确认 ready=true；未就绪时按 API 文档完成配置。就绪后可以检查服务并创建会话：
 
 ```bash
 curl -sS http://127.0.0.1:8000/health
@@ -216,7 +216,7 @@ curl -sS "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/runs" \
   -d '{"message":"请分析当前项目结构，暂不修改文件"}'
 ```
 
-执行接口等待本轮结束后返回最终回答。会话列表、历史查询、错误码和配置项见 [HTTP 使用说明](docs/api.md)；前端开发或交给 AI 对接时，使用 [前端接入 API 文档](docs/frontend-api.md)。当前源码提供 `/docs`、`/redoc` 和 `/openapi.json`，但尚未实现 SSE、后台任务或取消接口。
+原 `/runs` 等待本轮结束后返回最终回答；使用 `curl -N` 请求 `/runs/stream` 可持续接收正文、reasoning 和工具事件。`GET /api/v1/runtime` 查询当前配置，`GET /api/v1/models` 获取本地快捷模型列表；快速切换不保存配置。断开流式连接会尝试取消，不回滚工具副作用。完整请求、事件和错误见 [HTTP 使用说明](docs/api.md)与[前端接入 API 文档](docs/frontend-api.md)。`/docs`、`/redoc` 和 `/openapi.json` 已开放；没有后台任务或独立取消接口。
 
 ## 配置与扩展
 
@@ -224,7 +224,7 @@ curl -sS "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/runs" \
 
 | 后缀 | 用途 |
 | --- | --- |
-| `DB_PATH` | SQLite 文件路径；默认 `~/.omt/agent/state/omt.sqlite`，首次 `/login` 补齐配置后可初始化；API 仍要求预建 |
+| `DB_PATH` | SQLite 文件路径；默认 `~/.omt/agent/state/omt.sqlite`，CLI 首次 `/login` 或 API 确认首次配置后可初始化缺失库；正常启动不修复已有库 |
 | `WORKSPACE_PATH` | 工作目录声明，必须与启动时实际 cwd 一致；不会切换目录 |
 | `MAX_CONCURRENT_RUNS` | 同一 Manager 的运行上限，默认 `1`，不是工具并发数 |
 | `SKILL_ROOTS` | Skills 搜索路径的 JSON 数组；`[]` 关闭发现 |
@@ -277,7 +277,7 @@ basedpyright --pythonpath .venv/bin/python src/omt/core/settings.py
 - **HTTP 仅面向可信本机调用方**，不要直接暴露公网；当前不支持多用户隔离。
 - 会话互斥仅在同一进程内生效，**不要通过多个进程或 CLI / API 同时写同一会话**。
 - 已完成会话可以继续；失败或未完成的会话没有自动修复、重置或中断恢复流程。失败、取消或丢失响应后不要盲目重试，以免重复产生工具副作用。
-- HTTP 暂无流式事件、持久化后台任务、取消及断线重连能力。
+- HTTP 无持久化后台任务、独立取消接口或断线重连补发；流式断线仅尝试取消，JSON 断线不保证取消。
 
 ## 文档
 

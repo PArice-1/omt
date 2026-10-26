@@ -99,7 +99,7 @@ def test_cli_switch_rebuilds_and_preserves_history(
     output = capsys.readouterr().out
     assert "实际 reasoning_effort：none" in output
     assert "实际 reasoning_effort：max" in output
-    assert "可选等级：none、high、low" in output
+    assert "可选等级：none、low、high" in output
     assert "新模型回答" in output
     assert "test-only-key" not in output
 

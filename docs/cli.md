@@ -112,7 +112,7 @@ DeepSeek 模块为已确认的 deepseek-flash/deepseek-v4-pro 提供 low/high/ma
 
 ### 推理强度切换
 
-默认启动会展示推理状态；可选等级来自所选模型的 `thinkingLevelMap`，排除 null 值，始终包含 `none`。未配置等级、目录缺少对应能力或值为 null 都按 none 处理，并显示实际结果，不再假定默认 media。例如目录 high→max 时：
+默认启动会展示推理状态；可选等级来自所选模型的 `thinkingLevelMap`，排除 null 值，始终包含 `none` 并放在首位；已知等级按 low → medium → high → max 排列（仅展示已声明项），自定义名称在后按名称排序。当前 DeepSeek 模型显示 none → low → high → max，与 HTTP 一致。未配置等级、目录缺少对应能力或值为 null 都按 none 处理，并显示实际结果，不再假定默认 media。例如目录 high→max 时：
 
 ```text
 You> /thinking high

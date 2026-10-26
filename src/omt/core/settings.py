@@ -50,6 +50,20 @@ class ModelDefinition(BaseModel):
     # 等级名映射到提供商的 reasoning_effort；映射缺失、等级缺失或值为 null 时按 none 处理。
     thinkingLevelMap: dict[str, NonEmptyString | None] | None = None
 
+    @property
+    def available_thinking_levels(self) -> tuple[str, ...]:
+        """统一展示顺序：none 在首位，已声明的 low/medium/high/max 从低到高。
+
+        排除 null 能力，不补造模型未声明的等级；自定义名称无法推断强度，
+        放在已知等级后按名称排序。仅派生展示值，不改写映射或配置。
+        """
+        preferred = ("low", "medium", "high", "max")
+        supported = {key for key, value in (self.thinkingLevelMap or {}).items()
+                     if key != "none" and value is not None}
+        known = tuple(level for level in preferred if level in supported)
+        custom = tuple(sorted(supported.difference(preferred)))
+        return ("none", *known, *custom)
+
 
 class ProviderModels(BaseModel):
     """同一提供商下的模型定义。"""

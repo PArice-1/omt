@@ -1,580 +1,445 @@
-# OMT 前端接入 API 文档
+# 前端接入 API 文档
 
-> 面向前端开发者及负责生成前端代码的 AI。本文描述当前可调用的 HTTP 接口、数据格式和可观察行为，不要求了解后端内部实现。可将本文件完整交给 AI，作为前端开发的接口契约。
->
-> 适用范围：当前仓库工作区的 `/api/v1` 接口。后端面向**可信本机、单用户、固定工作目录**，采用**非流式 JSON 响应**。本文中的 ID、时间、回答和工具输出均为示例，不是固定返回值。
+本文描述当前实现的本机 HTTP 契约，适用于浏览器 UI、其他客户端及负责生成前端的 AI。启动和环境变量见 [HTTP 使用说明](api.md)，模块职责见[架构说明](architecture.md)。
 
-## 1. 开始接入前必须知道的事
+**前后端对齐入口：**第 5 节定义 OMT v1 流式协议、服务端输出链路、事件顺序和界面更新规则；第 6 节给出 `fetch` 增量读取与 SSE 解析代码。前端消费的是本文的 OMT 协议，不是 OpenAI `choices[].delta`、LangGraph 原始事件或普通 JSON `/runs` 响应。
 
-1. 默认服务地址是 `http://127.0.0.1:8000`。下文路径均相对于该地址。
-2. 当前工作区已暂时停用访问令牌校验，四个会话业务接口均**无需认证，也不需要发送 `Authorization` 请求头**。前端不需要令牌输入或登录流程；这不影响后端连接模型所需的 API Key。
-3. 发送消息后，请求会一直等待本轮结束，再一次性返回最终回答；不是 SSE、WebSocket 或后台任务提交接口。
-4. 历史由服务端保存。前端只发送本轮 `message`，**不要上传完整历史、角色数组或系统提示词**。
-5. 一轮执行可能读写文件或运行命令。超时、断线、失败不保证操作没发生，**禁止对发送消息请求做无条件自动重试**。
-6. 同一个会话不能同时运行或读取历史。默认整个服务同时只允许一轮执行，超额立即报错、不排队。
-7. 后端当前没有取消、运行状态查询、删除会话、重命名、流式输出、分页或多用户接口。不要为这些功能编造接口。
-8. 后端工作目录在启动时固定，不能通过请求切换。它不是安全沙箱；不要直接向公网或不可信用户开放。
+## 1. 接入约束与调用顺序
 
-## 2. 连接与通用规则
+- 默认地址 `http://127.0.0.1:8000`，所有接口当前免认证；配置 access_token 也不启用校验。只供可信本机使用。
+- 推荐浏览器使用同源代理；后端没有 CORS 允许列表，不要把 CORS 当认证，也不要把开发代理向不可信网络开放。
+- HTTP 不解释 CLI 斜杠命令；模型、思考等级通过独立接口修改。
+- 请求体拒绝额外字段。模型地址、系统提示词、工具、MCP、Skills、工作目录不接受客户端修改。
+- 模型可能调用文件/Bash 工具。失败、取消、断线均不保证副作用回滚，执行 POST 不能自动重试。
 
-### 2.1 服务准备
+建议流程：
 
-前端接入假定后端已完成模型配置、数据库初始化，并已启动。后端操作者的完整准备步骤见仓库根目录 `README.md`，启动配置见 `docs/api.md`；前端不需要读取这些配置文件。
-
-已准备好环境时，可由后端操作者执行：
-
-```bash
-# 在目标工作目录执行；当前无需配置 OMT_API_ACCESS_TOKEN。
-uv run omt-api
+```text
+GET /api/v1/runtime
+  ├─ 未就绪：厂商 → 配置预览 → 确认模型 → 检查保存与启用结果
+  └─ 已就绪：读取快捷模型列表、会话列表
+               → 选择会话并读取历史，或创建空会话
+               → POST runs/stream，增量展示
+               → 收到成功终态后刷新历史和列表
 ```
 
-当前后端未启用访问令牌的启动校验及路由鉴权依赖，配置 `OMT_API_ACCESS_TOKEN` 也不会自动恢复接口认证。本文按这一工作区现状描述；其他文档若仍要求 Bearer 令牌，不适用于当前接入流程。不要将模型凭据或用户配置提交到仓库。
+`/health` 返回 `{"status":"ok"}`，仅表示存活；上游不可用、未配置或数据库未就绪时它仍可能正常。
 
-当前源码也提供以下辅助文档端点，均无需认证：
+## 2. 基础信息和临时运行设置
 
-| 路径 | 用途 |
+### GET /api/v1/runtime
+
+无请求体。200 示例：
+
+```json
+{
+  "configured": true,
+  "ready": true,
+  "mutable": true,
+  "changing": false,
+  "busy": false,
+  "running": 0,
+  "thinking": {
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "level": "high",
+    "reasoning_effort": "high",
+    "available_levels": ["none", "low", "high", "max"]
+  },
+  "message": "运行环境已就绪"
+}
+```
+
+| 字段 | 含义 |
 | --- | --- |
-| `/docs` | Swagger UI，可直接试调业务接口，无需 Authorize |
-| `/redoc` | ReDoc 接口文档 |
-| `/openapi.json` | OpenAPI 定义，可辅助生成客户端类型 |
+| `configured` | 磁盘默认配置是否齐全；不验证远程 Key 有效性或网络可达 |
+| `ready` | 是否有可用运行实例；不保证下一次上游调用成功 |
+| `mutable` | 是否支持配置/切换；注入固定 Manager 时为 false |
+| `changing` | 是否正在确认配置或切换模型/等级 |
+| `busy` | 是否有借用 Manager 的请求、互斥操作或配置切换；只是展示快照 |
+| `running` | Manager 已占位且尚未结束的轮次数 |
+| `thinking` | 当前运行配置；未就绪或固定 Manager 模式为 null |
+| `message` | 安全状态提示，不含底层异常原文 |
 
-当前业务接口同样无需认证。错误响应、并发和失败语义应以本文为补充，不能只根据生成的 OpenAPI 推断。
+`thinking.level` 是请求等级；`reasoning_effort` 是当前模型实际映射结果。例如 level=high 而 effort=none，表示保留请求等级但当前模型无法映射。UI 必须提示回退，不能把请求等级当实际能力。
 
-### 2.2 请求与响应
+`available_levels` 已按展示顺序返回：none 在首位，已支持的 low → medium → high → max 从低到高排列；未声明或映射为 null 的等级不返回。当前已知 DeepSeek 模型为 `none → low → high → max`。其他自定义名称保留在已知等级后并按名称排序，不推断其强度。运行状态、快捷模型列表和流中运行快照使用同一规则，**前端直接保留服务端顺序，不再按字母排序**。本次只调整数组顺序，不改变等级名称、映射含义或配置文件。
 
-带 JSON 请求体的接口使用：
+### GET /api/v1/providers
 
-```http
-Content-Type: application/json
-Accept: application/json
-```
-
-- GET 不需要请求体；两个 POST 都需要 JSON 对象，创建空会话也必须传 `{}`，不能省略请求体或传 `null`。
-- 成功响应直接返回对象或数组，**没有统一的 `data`、`success`、`total` 外层包装**。
-- 路径中的 `session_id` 来自创建/列表响应，作为不透明字符串保存，拼接 URL 时使用 `encodeURIComponent`。服务端新建 ID 当前形如 UUID，但前端无需自行生成或解析。
-- 请求体拒绝额外字段。不要附加 `stream`、`model`、`messages`、`workspace_path`、`run_id` 等未声明字段。
-- 本文列出的接口不提供业务查询参数；不要依赖传入 `page`、`limit`、`search` 等能产生效果。
-- 错误统一格式见第 5 节。前端按 HTTP 状态和 `error.code` 分支，不要匹配中文错误文案。
-
-### 2.3 浏览器跨域与本机安全
-
-当前服务**没有配置 CORS 允许列表**。例如前端运行在 `http://localhost:5173`，不能假定浏览器能直接调用 `http://127.0.0.1:8000`。无需认证不等于允许跨域；使用 `Content-Type: application/json` 的跨域 POST 仍会触发预检，跨域 GET 的响应也受浏览器 CORS 限制。
-
-推荐开发时由前端开发服务器代理 `/api` 到后端，生产环境使用同源反向代理。若需要健康检查，同样代理 `/health`。以下为 Vite 配置片段，**属于前端建议，不是后端已有配置**：
-
-```ts
-server: {
-  proxy: {
-    '/api': { target: 'http://127.0.0.1:8000', changeOrigin: true },
-    '/health': { target: 'http://127.0.0.1:8000', changeOrigin: true },
-  },
-}
-```
-
-也可由后端另行配置明确的可信来源，但不要直接放开全部来源；CORS 不是认证或权限控制。代理需允许长时间等待执行响应，不要对 POST 自动重试。
-
-当前接口没有访问令牌保护，任何能够访问后端的调用方都可能读取会话或触发文件、命令工具。后端及前端开发代理都应只面向可信本机使用，不要通过监听所有网卡、反向代理或端口转发向不可信网络开放。未来若要做面向他人的部署，需要先设计认证和权限隔离。
-
-## 3. 接口总览
-
-| 方法 | 路径 | 需要认证 | 成功状态 | 功能 |
-| --- | --- | --- | --- | --- |
-| GET | `/health` | 否 | 200 | 服务存活检查 |
-| POST | `/api/v1/sessions` | 否 | 201 | 创建并持久化一个空会话 |
-| GET | `/api/v1/sessions` | 否 | 200 | 获取当前工作目录的会话列表 |
-| GET | `/api/v1/sessions/{session_id}/messages` | 否 | 200 | 获取会话的完整可展示历史 |
-| POST | `/api/v1/sessions/{session_id}/runs` | 否 | 200 | 在指定会话发送一条消息并等待本轮完成 |
-
-### 3.1 GET /health：存活检查
-
-无参数、无请求体、无需鉴权。
-
-```bash
-curl -sS http://127.0.0.1:8000/health
-```
-
-成功响应：
+返回注册厂商和本地凭据状态：
 
 ```json
-{"status":"ok"}
+[{"provider":"deepseek","logged_in":true}]
 ```
 
-这是存活检查，不会执行模型或工具；不代表持续探测数据库可用性或保证上游模型可用。
+不返回 Key；logged_in 不代表 Key 仍有效。当前实际注册厂商以返回列表为准。
 
-### 3.2 POST /api/v1/sessions：创建会话
+### GET /api/v1/models
 
-#### 请求
-
-| 字段 | 类型 | 必填 | 默认值 | 约束 |
-| --- | --- | --- | --- | --- |
-| `title` | `string \| null` | 否 | `null` | 最多 200 字符，不含 NUL（`\u0000`）；允许空字符串、纯空白和换行，不自动去除首尾空白 |
-
-```bash
-curl -sS http://127.0.0.1:8000/api/v1/sessions \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"分析项目"}'
-```
-
-以下三个请求体均合法：
-
-```json
-{}
-```
-
-```json
-{"title":null}
-```
-
-```json
-{"title":"分析项目"}
-```
-
-#### 成功响应：201
-
-```json
-{
-  "session_id": "8f194738-7c09-4f50-a97d-0aedb97e7c67",
-  "title": "分析项目",
-  "created_at": "2026-06-01 08:00:00",
-  "updated_at": "2026-06-01 08:00:00"
-}
-```
-
-字段说明：
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `session_id` | `string` | 后续读取历史、发送消息时使用的会话 ID |
-| `title` | `string \| null` | 创建时传入的标题；未传时为 null |
-| `created_at` | `string` | 创建时间，正常初始化的数据库返回 UTC，格式 `YYYY-MM-DD HH:mm:ss` |
-| `updated_at` | `string` | 最近更新时间，格式同上；成功执行一轮后刷新 |
-
-行为说明：
-
-- 创建接口本身不调用模型或工具，但会立即保存会话。因此创建后即出现在列表中，历史为 `[]`。
-- 相同标题可以创建多个会话。重复 POST 会创建不同 ID；该接口也没有幂等去重。
-- 没有自动生成/更新标题的承诺。省略标题后即使发送消息，也不会自动从消息生成标题。
-- 前端可用“新对话”作为空标题展示兜底，但不要把展示兜底误认为后端存储值。
-- 不会切换任何服务端“当前会话”；当前选中的会话由前端自己维护。
-
-时间字符串没有 `Z` 或时区偏移，不应直接用 `new Date(raw)` 并假定所有浏览器都会按 UTC 解析。可先将标准格式转换为 `YYYY-MM-DDTHH:mm:ssZ`，再转换到用户时区。列表展示通常应保留服务端返回顺序。
-
-### 3.3 GET /api/v1/sessions：会话列表
-
-无请求体，无分页、筛选或搜索参数。
-
-```bash
-curl -sS http://127.0.0.1:8000/api/v1/sessions
-```
-
-#### 成功响应：200
-
-返回 `SessionResponse[]`，每一项字段与创建响应一致：
+只读本地配置，不联网；返回已保存凭据的注册厂商下全部已导入模型，不只是曾经选过的模型：
 
 ```json
 [
-  {
-    "session_id": "8f194738-7c09-4f50-a97d-0aedb97e7c67",
-    "title": "分析项目",
-    "created_at": "2026-06-01 08:00:00",
-    "updated_at": "2026-06-01 08:05:00"
-  },
-  {
-    "session_id": "29c8023b-1573-4bc7-ab89-5521db6738f8",
-    "title": null,
-    "created_at": "2026-06-01 07:00:00",
-    "updated_at": "2026-06-01 07:00:00"
-  }
+  {"provider":"deepseek","model":"deepseek-flash","available_levels":["none","low","high","max"],"current":true},
+  {"provider":"deepseek","model":"deepseek-v4-pro","available_levels":["none","low","high","max"],"current":false}
 ]
 ```
 
-行为说明：
+没有可选项时为 `[]`。UI 可以直接展示和搜索，选择项内部保留 provider + model，不按名称猜厂商。列表按厂商、模型 ID 排序；它不保证远程模型可达或支持工具。
 
-- 没有会话时返回 `[]`，不是 404。
-- 只返回后端当前工作目录所属的会话，不返回其他工作目录的记录。
-- 排序为 `updated_at` 降序，再按 `created_at` 降序，最后按 `session_id` 升序。
-- 列表没有消息摘要、未读数、运行状态、失败状态或消息数量字段；不要从时间戳推断会话是否正在运行或能否继续。
-- 读取列表不会刷新时间，也不会执行模型或工具。
-- 即使某会话正在运行或处于未完成状态，也可能出现在列表中。能列出不等于能成功读取它的历史。
-
-### 3.4 GET /api/v1/sessions/{session_id}/messages：完整历史
-
-路径参数 `session_id` 为会话 ID，无请求体。
-
-```bash
-SESSION_ID='<创建或列表接口返回的 session_id>'
-curl -sS "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/messages"
-```
-
-#### 成功响应：200
-
-返回按历史顺序排列的 `MessageResponse[]`。以下示例包含一次工具调用：
+### PUT /api/v1/runtime/model
 
 ```json
-[
-  {
-    "role": "user",
-    "text": "请查看 README.md",
-    "tool_calls": []
-  },
-  {
-    "role": "assistant",
-    "text": "我先读取文件。",
-    "tool_calls": [
-      {
-        "id": "call_001",
-        "name": "read",
-        "args": {"file":"README.md","offset":1,"limit":true}
-      }
-    ]
-  },
-  {
-    "role": "tool",
-    "text": "# OMT\n项目说明……",
-    "tool_calls": [],
-    "tool_call_id": "call_001",
-    "name": "read",
-    "status": "success"
-  },
-  {
-    "role": "assistant",
-    "text": "这是项目说明的摘要……",
-    "tool_calls": []
-  }
-]
+{"provider":"deepseek","model":"deepseek-v4-pro"}
 ```
 
-字段说明：
+200 返回完整 RuntimeResponse。必须来自本地快捷目录，不接受任意地址或未知模型。切换时重新读取所选模型目录和凭据，保留原请求思考等级；缺映射时实际按 none。
 
-| 字段 | 类型 | 返回规则与含义 |
-| --- | --- | --- |
-| `role` | `"user" \| "assistant" \| "tool"` | 必有；用户、助手或工具消息 |
-| `text` | `string` | 必有；可能为空字符串，不保证是 Markdown |
-| `tool_calls` | `ToolCallResponse[]` | 必有；没有工具调用时为 `[]` |
-| `tool_call_id` | `string` | 可省略；工具结果对应的调用 ID |
-| `name` | `string` | 可省略；工具名称 |
-| `status` | `"success" \| "error"` | 可省略；工具消息状态，不是整轮运行状态 |
+### PUT /api/v1/runtime/thinking
 
-`ToolCallResponse` 字段：
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `id` | `string`，值为空时会省略 | 工具调用 ID；有值时可与结果的 `tool_call_id` 关联 |
-| `name` | `string` | 工具名称，不要在前端写死可用工具枚举 |
-| `args` | `object` | 工具输入参数，键和值依工具不同而变化，可含嵌套 JSON 数据 |
-
-可空字段在历史响应中会被省略，不要要求每条消息都有 `name`、`status` 或调用 ID。`session.title` 则不同，未设置时仍明确返回 `null`。
-
-行为与展示要求：
-
-- 新建但尚未发送消息的会话返回 `[]`。
-- 返回的是完整可展示历史，不是增量。刷新后应**替换**对应会话的消息数组，而不是整体追加，否则会重复展示。
-- 一轮可能包含多条助手消息、多次工具调用和多个工具结果，不保证严格“一条 user + 一条 assistant”。
-- 助手可能只有工具调用而没有文本。不要丢弃 `text === ""` 但 `tool_calls` 非空的消息。
-- 按原数组顺序展示；有调用 ID 时关联工具请求和结果。缺 ID 时保留原消息，不要依赖文本猜配对。
-- 本接口不返回消息 ID、消息时间、run_id 或分页游标；渲染键可在当前完整快照内使用索引，但不要将其当永久消息标识。
-- 不返回系统提示词、内部模型元数据或二进制附件；消息正文、工具参数及结果仍可能含敏感信息，不代表已脱敏。
-- `status: "success"` 表示工具消息状态，不能单独证明 Bash 退出码为 0 或业务目标已完成，仍需看工具结果正文。
-- 读取历史不会执行新一轮，也不会更新会话的 `updated_at`。不存在“激活/恢复会话”的 HTTP 调用；选中后读历史、继续向原 ID 发送即可。
-- 运行中读取同会话历史会返回 `409 session_busy`，不能把此接口当实时进度流。
-- 不存在或属于其他目录：`404 session_not_found`；会话未完成或此前运行失败：可能返回 `409 session_incomplete`，不是部分历史。
-
-### 3.5 POST /api/v1/sessions/{session_id}/runs：发送消息
-
-#### 请求
-
-| 字段 | 类型 | 必填 | 约束 |
-| --- | --- | --- | --- |
-| `message` | `string` | 是 | 1～32000 字符；不能全为空白，不能含 NUL（`\u0000`）；合法输入的首尾空白与换行原样保留 |
-
-```bash
-curl -sS "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/runs" \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"请分析当前项目结构，暂时不要修改文件"}'
+```json
+{"level":"high"}
 ```
 
-只发送当前用户输入，不要传历史。`message: null`、数字、空字符串、纯空白、超过上限或额外字段都会被拒绝。长度由服务端按字符校验；JavaScript 的 `.length` 对部分 emoji 等字符计数不同，前端校验不能替代服务端结果。
+200 返回完整 RuntimeResponse。主动提交的等级必须在当前 `available_levels` 中，否则 422，不悄悄回退。
 
-HTTP 不解释 CLI 命令；`/resume`、`/exit` 等会作为普通消息发送，不会切换会话或关闭服务。
+两项切换都：
 
-#### 成功响应：200
+- 作用于整个 API 进程，影响所有会话的后续轮次，不是当前页面/Session 的私有配置。
+- 不改写默认配置、不写入 Session 数据库；重启恢复磁盘默认。
+- 忙碌时立即 `409 manager_busy`，不排队、不取消已有 run。
+- 构建失败返回安全错误，原运行配置保持不变；成功后应使用返回状态更新 UI。
+
+## 3. 首次配置
+
+未配置也能启动并查询上述状态。会话接口在没有运行实例时返回 `503 runtime_not_ready`。
+
+### POST /api/v1/model-logins：预览
+
+首次输入：
+
+```json
+{"provider":"deepseek","api_key":"<在密码输入框收集的 Key>"}
+```
+
+已有凭据时省略 api_key，复用保存的 Key：
+
+```json
+{"provider":"deepseek"}
+```
+
+成功为 201：
 
 ```json
 {
-  "session_id": "8f194738-7c09-4f50-a97d-0aedb97e7c67",
-  "run_id": "04aa0222-e299-4c4a-bdea-cb9d6e3cf707",
-  "status": "completed",
-  "answer": "项目包含 API、CLI 和核心模块……",
-  "warnings": []
+  "login_id":"一次性预览 ID",
+  "provider":"deepseek",
+  "models":["deepseek-flash","deepseek-v4-pro"],
+  "from_cache":false,
+  "expires_in":600
 }
 ```
 
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `session_id` | `string` | 本轮所属会话 |
-| `run_id` | `string` | 本轮请求关联 ID，可用于错误提示和诊断；不能据此查询任务 |
-| `status` | `"completed"` | 成功响应固定为 completed；没有 running/pending 的成功响应 |
-| `answer` | `string` | 本轮最终助手回答，可为空；不是工具全过程或完整历史 |
-| `warnings` | `string[]` | 非致命警告；正常为 `[]` |
+- 显式查询提供商目录，不保存、不创建数据库；新 Key 查询失败不使用旧缓存假装成功。
+- 已保存 Key 且未替换时，查询失败可以回退本地目录，from_cache=true。
+- 预览包含的凭据仅在服务端内存暂存；有效期从生成后计，默认 600 秒，到期清除，重启即失效。
+- 默认最多 8 份预览，查询中的请求也占名额；超限返回 429。
+- Key 不出现在响应中。客户端不写 localStorage、聊天历史、URL、日志或异常追踪，提交后尽快清空输入缓冲。
 
-目前已知警告：
+### POST /api/v1/model-logins/{login_id}/confirm：确认保存并启用
 
-| 警告 | 含义 | 前端处理 |
-| --- | --- | --- |
-| `session_timestamp_update_failed` | 本轮已完成，但会话最近更新时间更新失败 | 仍显示成功回答，可提示列表时间可能未更新；不要重新执行本轮 |
-
-行为说明：
-
-- 不是 `202 Accepted`。HTTP 响应到达前，本轮可能仍在处理模型或工具，期间没有进度响应。
-- 不承诺固定耗时；客户端和代理不宜设置过短超时。任何客户端超时都不等于后端取消。
-- 服务端接续已有历史；已完成会话在后端重启后仍可用原 ID 继续。
-- 成功后刷新历史以获取本轮全部消息；刷新列表以获取新的更新时间及排序。
-- `answer` 通常已在刷新后的历史末尾。若先临时显示 answer，刷新后要替换/移除临时消息，不能再重复追加。
-- 某个工具返回错误内容不一定使整轮失败；若后续完成并返回 200，仍按本轮完成处理。真正运行失败时见 `502 run_failed`。
-- 没有幂等键、去重或自动重试。重复 POST 即使内容相同，也可能执行新一轮并重复产生文件/进程副作用。
-
-## 4. 推荐的前端调用流程
-
-### 4.1 页面初始化和会话切换
-
-```text
-配置服务地址/同源代理（无需访问令牌）
-  → GET /api/v1/sessions
-  → 选中一个会话，GET /api/v1/sessions/{id}/messages
-  → 用返回数组替换该会话的消息列表
+```json
+{"model":"deepseek-flash"}
 ```
 
-- 空列表展示新建入口；空历史展示尚无消息，而不是报错。
-- 当前会话 ID 由前端维护。切换会话不调用额外“打开”接口。
-- 切换较快时，较早的历史响应可能晚到。按 session_id 或请求序号校验，只更新相应会话缓存，不要覆盖新选中会话。
-- 对同会话的历史读取去重，避免组件重复请求互相触发 `session_busy`。
+必须选择本次预览中的精确 ID。不存在或过期预览返回 404；无效模型返回 422，均不保存。
 
-### 4.2 创建并发送
-
-```text
-POST /api/v1/sessions，保存返回的 session_id
-  → POST /api/v1/sessions/{id}/runs，只传本轮 message
-  → 等待最终响应
-  → 成功后 GET /api/v1/sessions/{id}/messages 替换历史
-  → GET /api/v1/sessions 刷新侧栏
-```
-
-可以点击“新建会话”就创建，也可在首条发送时延迟创建；后者是前端策略，不是后端自动行为。若创建失败，不要继续向猜测的 ID 发送。创建请求丢失响应时，可先刷新列表确认，避免连续重复创建。
-
-执行期间禁用同会话重复发送，不对该会话轮询历史。默认全局运行上限为 1；即使切到另一个会话发送，也可能得到 `429 capacity_exceeded`。
-
-### 4.3 建议的页面状态（前端自行维护）
-
-| 前端状态 | 进入条件 | 展示/操作建议 |
-| --- | --- | --- |
-| `idle` | 初始或已完成 | 可发送 |
-| `sending` | 已发出 runs 请求，尚未收到响应 | 展示“正在执行”；禁止重复发送，不假装显示真实工具进度 |
-| `completed` | 收到 200 completed | 展示 answer、warnings，刷新历史与列表 |
-| `rejected` | 例如 422、session_busy、capacity_exceeded | 修正输入或等待；由用户确认再发，不循环重试 |
-| `needs_attention` | session_incomplete、run_failed | 提示需要检查，阻止盲目继续；可新建会话但不代表旧操作已回滚 |
-| `unknown` | 发出执行请求后网络断开、客户端超时或响应无法解析 | 提示“无法确认本轮结果”，不要显示为“已取消”或自动重发 |
-
-以上不是服务端返回的会话状态；列表没有这些字段。刷新页面后也没有可查询的持久化运行台账。
-
-结果不明时，可由用户稍后尝试读取历史：若返回成功则检查最新内容，若 busy 则仍有操作占用，若 incomplete 则需人工检查。即使历史能读取，也没有 run_id 对照字段，**不能保证自动判断某次丢失响应的请求是否执行过**。
-
-## 5. 错误格式与处理
-
-应用返回的错误为：
+成功保存后的 200：
 
 ```json
 {
-  "error": {
-    "code": "run_failed",
-    "message": "本轮执行失败，可能已有工具副作用，请检查会话",
-    "run_id": "04aa0222-e299-4c4a-bdea-cb9d6e3cf707"
-  }
+  "configuration_saved":true,
+  "runtime_ready":true,
+  "runtime":{"configured":true,"ready":true,"mutable":true,"changing":false,"busy":false,"running":0,"thinking":{"provider":"deepseek","model":"deepseek-flash","level":"none","reasoning_effort":"none","available_levels":["none","low","high","max"]},"message":"运行环境已就绪"},
+  "error":null
 }
 ```
 
-- `code`、`message` 为字符串；`run_id` 可省略，不是每个错误都有。
-- 业务错误不采用 FastAPI 默认的 `detail` 数组，不返回字段级校验详情或原始请求内容。
-- 错误不暴露底层异常堆栈。前端可以展示 message，但逻辑判断应使用 code。
-- 代理、浏览器网络错误或其他基础设施响应不保证采用该 JSON 格式，客户端应保留兜底错误处理。
+确认会保存凭据、完整厂商目录和默认模型。尚无运行环境时，显式初始化缺失数据库后启用；已有数据库不修复、不迁移。已有运行实例时尝试切换到所选模型。
 
-| HTTP | `error.code` | 含义及建议 |
+**保存与启用不是事务：**保存成功、启用失败时仍返回 200、configuration_saved=true，但 error 非空，包含稳定 code/message。runtime_ready 可能为 false，也可能表示旧实例仍可用；以 runtime.thinking 判断真正运行的模型。预览在成功保存后即被消耗，重复确认返回 404。保存错误返回 503，可能已有逐文件部分写入，不能假定完全未修改。
+
+日常只切换模型使用 `/runtime/model`，不要每次走配置确认、重写默认选择。
+
+## 4. 会话与非流式兼容
+
+| 方法与路径 | 请求 | 成功响应 |
 | --- | --- | --- |
-| 404 | `session_not_found` | ID 不存在，或不属于当前工作目录；刷新列表，清理失效选择，不当作空历史 |
-| 409 | `session_busy` | 同会话正在运行或读取历史；本次操作被拒绝，稍后由用户重试，不循环发送 |
-| 409 | `session_incomplete` | 会话处于未完成/失败状态，不能直接读取或追加；没有在线修复接口，提示人工检查或另建会话 |
-| 422 | `invalid_request` | 请求体、类型、长度、格式或额外字段不合法；修正请求，不自动重复发送 |
-| 429 | `capacity_exceeded` | 全局运行容量已满，本次运行未接纳，不会排队；等待其他执行结束后由用户重试 |
-| 502 | `run_failed` | 本轮运行失败，可能已有文件/命令副作用；同会话后续操作通常转为 incomplete，不自动重发 |
-| 503 | `storage_unavailable` | 存储异常；若发生在执行期间，可能已产生副作用。GET 可稍后再查，POST 不盲目重试 |
-| 503 | `manager_closed` | 服务未就绪或正在关闭；等待后端恢复；不要将所有 503 都视作已安全回滚 |
-| 500 | `internal_error` | 未预期的服务异常；执行结果可能不明，保留诊断信息并提示检查，不自动重发 |
-| 404 / 405 等 | `http_error` | 未知路径、方法不允许等 HTTP 错误；检查 URL 和方法，不视为业务数据 |
-
-并发拒绝、容量拒绝或输入校验错误没有可靠的“错误优先级”承诺。例如满载时不要依赖一个无效会话 ID 必然先得到 404。
-
-## 6. TypeScript 类型与最小客户端
-
-以下示例可作为前端 API 层起点，不绑定 UI 框架。假定现代浏览器支持 fetch，并且已配置同源代理；类型与本文响应一致，代码不包含自动重试、超时或取消承诺。
+| `POST /api/v1/sessions` | `{}` 或 `{"title":"标题"}` | 201 SessionResponse |
+| `GET /api/v1/sessions` | 无 | 200 SessionResponse[] |
+| `GET /api/v1/sessions/{id}/messages` | 无 | 200 MessageResponse[] |
+| `POST /api/v1/sessions/{id}/runs` | `{"message":"本轮输入"}` | 200 RunResponse，等待本轮结束 |
 
 ```ts
-export interface SessionResponse {
+interface SessionResponse {
   session_id: string;
   title: string | null;
   created_at: string;
   updated_at: string;
 }
-
-export interface ToolCallResponse {
-  id?: string;
-  name: string;
-  args: Record<string, unknown>;
-}
-
-export interface MessageResponse {
+interface MessageResponse {
   role: 'user' | 'assistant' | 'tool';
   text: string;
-  tool_calls: ToolCallResponse[];
+  message_id?: string;
+  reasoning?: string;
+  tool_calls: { id?: string; name: string; args: Record<string, unknown> }[];
   tool_call_id?: string;
   name?: string;
   status?: 'success' | 'error';
 }
-
-export interface RunResponse {
+interface RunResponse {
   session_id: string;
   run_id: string;
   status: 'completed';
   answer: string;
   warnings: string[];
 }
-
-export interface ErrorResponse {
-  error: { code: string; message: string; run_id?: string };
-}
-
-export class ApiError extends Error {
-  constructor(
-    public readonly status: number,
-    public readonly code: string,
-    message: string,
-    public readonly runId?: string,
-  ) {
-    super(message);
-    this.name = 'ApiError';
-  }
-}
-
-function isErrorResponse(value: unknown): value is ErrorResponse {
-  if (typeof value !== 'object' || value === null || !('error' in value)) {
-    return false;
-  }
-  const error = value.error;
-  return typeof error === 'object' && error !== null
-    && 'code' in error && typeof error.code === 'string'
-    && 'message' in error && typeof error.message === 'string'
-    && (!('run_id' in error) || typeof error.run_id === 'string');
-}
-
-// baseUrl：同源代理时传 ''；只有跨域已允许时才传完整后端地址。
-export function createOmtClient(baseUrl: string) {
-  const base = baseUrl.replace(/\/+$/, '');
-
-  async function request<T>(
-    path: string,
-    init: RequestInit = {},
-  ): Promise<T> {
-    const headers = new Headers(init.headers);
-    headers.set('Accept', 'application/json');
-    if (init.body !== undefined) {
-      headers.set('Content-Type', 'application/json');
-    }
-
-    // 网络失败直接抛出；runs 的调用方应按“结果不明”处理，不能自动重试。
-    const response = await fetch(`${base}${path}`, { ...init, headers });
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch {
-      throw new ApiError(
-        response.status, 'invalid_response', '服务或代理返回了无法解析的响应',
-      );
-    }
-    if (!response.ok) {
-      if (isErrorResponse(body)) {
-        throw new ApiError(
-          response.status, body.error.code, body.error.message, body.error.run_id,
-        );
-      }
-      throw new ApiError(response.status, 'unexpected_response', '请求失败');
-    }
-    // 此断言只提供编译期类型，不等于运行时校验；正式项目可补充响应 schema 校验。
-    return body as T;
-  }
-
-  const sessionPath = (id: string) =>
-    `/api/v1/sessions/${encodeURIComponent(id)}`;
-
-  return {
-    health: () => request<{ status: 'ok' }>('/health'),
-    listSessions: () => request<SessionResponse[]>('/api/v1/sessions'),
-    createSession: (title: string | null = null) =>
-      request<SessionResponse>('/api/v1/sessions', {
-        method: 'POST', body: JSON.stringify({ title }),
-      }),
-    getMessages: (id: string) =>
-      request<MessageResponse[]>(`${sessionPath(id)}/messages`),
-    run: (id: string, message: string) =>
-      request<RunResponse>(`${sessionPath(id)}/runs`, {
-        method: 'POST', body: JSON.stringify({ message }),
-      }),
-  };
-}
 ```
 
-最小调用顺序（在按钮事件等显式用户操作中执行，不要在渲染/自动重试逻辑里触发）：
+- title 默认 null，最多 200 字符，禁止 NUL；允许空白/换行。同标题可重复创建，无幂等和自动标题生成。
+- message 是 1～32000 字符的字符串，禁止全空白和 NUL；保留合法首尾空白和换行。只提交新输入，不提交历史。
+- 创建即登记空会话，不调用模型；当前选中的会话由前端维护，没有服务端全局当前会话。
+- 列表只含当前工作目录，按 updated_at 降序、created_at 降序、session_id 升序；无分页和消息摘要。能列出不代表会话可继续。
+- 时间是 UTC 的 `YYYY-MM-DD HH:mm:ss`；转换为带 Z 的 ISO 字符串后再按时区展示，不能让浏览器猜时区。
+- 历史按原顺序完整返回；刷新时替换数组，不整体追加。用户/助手/工具可能多条，不是固定一问一答。
+- 历史新增可选 message_id 和 reasoning；旧消息缺失时正常展示。reasoning 优先取标准内容块，旧 DeepSeek 字段只作回退，不重复拼接。
+- 空正文但有工具请求的助手消息不能丢。工具按 tool_call_id 关联，status 仅为工具消息状态，不保证 Bash exit_code=0。
+- 不返回系统提示词、artifact、模型元数据、检查点、消息时间或历史 run_id；字段过滤不是全面脱敏。
+- 同会话运行/读取互斥，运行中不要轮询历史；失败/取消后可能返回 409 session_incomplete，没有在线修复或自动重试流程。
+- 普通 JSON 的网络断开仍不保证取消。run_id 只是关联标识，不能据此查询后台任务。
+- 成功后刷新历史与列表；刷新失败不能变成重新执行。`session_timestamp_update_failed` 只是更新时间失败，回答仍成功。
+
+## 5. POST /api/v1/sessions/{id}/runs/stream
+
+请求与非流式相同。200 为 `text/event-stream; charset=utf-8`，响应保持打开；使用 fetch 的 ReadableStream，不用只支持 GET 的原生 EventSource，也不能等 response.json()/text() 才展示。
+
+### 流式输出如何实现
+
+```text
+浏览器 fetch POST（提交一次 message，保持这次请求的响应打开）
+  → 路由校验请求，RunStream.start 等待 Manager 完成占位和历史校验
+  → 接纳失败：普通 HTTP JSON 错误；接纳成功：HTTP 200 + StreamingResponse
+  → 共用 Conversation 执行模型/工具，产生 RunEvent
+  → RunStream 同步投影到有界队列；响应异步读取队列，写出 UTF-8 SSE 帧
+  → 浏览器 response.body.getReader() 增量读取
+  → TextDecoder 保留跨读取的 UTF-8 字符，缓冲按空行拆帧
+  → 解析 data JSON，按 type 和关联 ID 更新对应界面
+  → run.completed / run.failed / run.cancelled；响应结束并清理关联执行
+```
+
+这是**同一次 HTTP 响应分批发送正文**，不需要服务器反向连接前端，也不等待整轮执行完成才返回整份答案。服务端核心回调只快速入队，不在模型事件回调里等待网络。响应带有 `Cache-Control: no-cache`、`X-Accel-Buffering: no`；代理仍需关闭响应缓冲，前端也必须逐块读取，不能使用 `await response.json()` 或 `await response.text()` 等整包完成。
+
+服务端不是等客户端读取到 run.started 后才开始模型；该事件表示已经接纳，不是需要前端回传的握手。停止时用同一请求的 AbortController，后端在检测到断线后尝试取消，不增加取消路由。
+
+### 事件信封与分帧
+
+```text
+event: assistant.reasoning.delta
+data: {"version":1,"seq":3,"type":"assistant.reasoning.delta","session_id":"...","run_id":"...","message_id":"...","role":"assistant","data":{"delta":"思考片段"}}
+
+```
+
+每个事件以空行结束；JSON 内换行已转义。一次网络读取可能包含半个事件、多个事件或半个 UTF-8 字符，必须增量解码并保留未完成帧。
+
+| 字段 | 规则 |
+| --- | --- |
+| version | 当前为 1；未知版本不得按旧协议猜测 |
+| seq | 当前流发送序号，递增；错误/溢出时不保证连续，不是补发游标 |
+| type | 与 SSE event 名相同；客户端应允许未来未知类型但不能把它当成功 |
+| session_id / run_id | 本轮关联，所有事件一致 |
+| message_id | 助手消息事件携带；正文和 reasoning 共用，优先使用底层消息 ID，缺失时生成本流消息 ID；历史 ID 可缺失，不能要求所有旧消息都能按 ID 合并 |
+| tool_call_id | 工具事件携带，关联同一次工具调用，不靠工具名或完成顺序猜配对 |
+| role | 助手为 assistant、工具为 tool；运行事件省略，reasoning 不是独立角色 |
+| data | 显式投影的事件内容，不是原始 LangChain 对象 |
+
+### 事件与 data
+
+| type | data | 含义 |
+| --- | --- | --- |
+| `run.started` | `{thinking: ThinkingResponse 或 null}` | 正式占位且历史通过校验；实际厂商/模型、请求等级和实际 effort 在 data.thinking 内，不另设 data.model；固定 Manager 模式为 null，不保证上游可达 |
+| `assistant.started` | `{}` | 一条有可展示内容的助手消息开始 |
+| `assistant.text.delta` | `{delta: string}` | 正文追加片段 |
+| `assistant.reasoning.delta` | `{delta: string}` | 提供商实际返回的 reasoning 片段，不保证所有模型都有 |
+| `assistant.completed` | `{}` | 该助手消息结束，不是整轮结束；只含工具请求的消息可能没有这些内容事件 |
+| `tool.started` | `{name: string, input: JSON值}` | 工具实际执行输入，不是尚未执行的参数 token |
+| `tool.delta` | `{name: string, delta: JSON值}` | 工具主动报告的 JSON 进度，可能是对象而非文本；不保证每个工具都提供 |
+| `tool.completed` | `{name: string, text: string, status: "success"}` 或 `{name: string, output: JSON值}` | 常规 ToolMessage 结果剔除 artifact；其他 JSON 返回使用 output，不能假定总有 text |
+| `tool.failed` | `{name: string, text: string, status: "error"}` 或 `{name: string, code: "tool_failed", message: string}` | 已处理错误的工具正文，或安全的执行失败说明，不发送未处理异常原文；仅结束该工具，不代表整轮失败 |
+| `run.completed` | `{status:"completed", answer, warnings}` | 成功终态，answer 是权威最终回答，不是所有正文增量的拼接 |
+| `run.failed` | `{code, message}` | 失败终态，可能已有副作用 |
+| `run.cancelled` | `{code:"run_cancelled", message}` | 运行被取消；断线后不保证能收到 |
+
+正文、reasoning 和工具可能交替出现，多次调用同名工具也可能并行；seq 只保证 Adapter 的发送顺序，不承诺底层所有并行事件的绝对发生顺序。客户端分别累积每条消息的正文/reasoning。最终 answer 用于确认或替换最终回答，不能重复追加，更不能把中间计划发言拼成最终答案。
+
+空闲心跳是 `: heartbeat\n\n`，不是 JSON 业务事件，不增加 seq，也不是运行成功。本协议不发送 OpenAI 风格的 `data: [DONE]`；必须根据运行终态事件结束本轮，不能只看连接关闭。
+
+### 一轮带工具调用的顺序示例
+
+以下为一种合法顺序，工具名和 ID 为示意；每一行实际编码成前述 `event:` + `data:` + 空行的 SSE 帧。thinking 对象字段见第 2 节；真实传输没有省略号。
+
+| seq | type | message_id | tool_call_id | data |
+| --- | --- | --- | --- | --- |
+| 1 | run.started | 不发送 | 不发送 | `{thinking: ThinkingResponse}` |
+| 2 | assistant.started | m1 | 不发送 | `{}` |
+| 3 | assistant.reasoning.delta | m1 | 不发送 | `{"delta":"先分析"}` |
+| 4 | assistant.text.delta | m1 | 不发送 | `{"delta":"正在查询"}` |
+| 5 | assistant.completed | m1 | 不发送 | `{}` |
+| 6 | tool.started | 不发送 | t1 | `{"name":"note","input":{"value":"一"}}` |
+| 7 | tool.delta | 不发送 | t1 | `{"name":"note","delta":{"progress":"一"}}` |
+| 8 | tool.completed | 不发送 | t1 | `{"name":"note","text":"结果:一","status":"success"}` |
+| 9 | assistant.started | m2 | 不发送 | `{}` |
+| 10 | assistant.text.delta | m2 | 不发送 | `{"delta":"最终答案"}` |
+| 11 | assistant.completed | m2 | 不发送 | `{}` |
+| 12 | run.completed | 不发送 | 不发送 | `{"status":"completed","answer":"最终答案","warnings":[]}` |
+
+每帧都还包含相同的 version=1、session_id、run_id；助手/工具帧分别带 role=assistant/tool，运行帧不带 role。不强制每轮都有 reasoning、工具或工具增量；同名工具可以有多个不同调用 ID 并行交错。工具也可以失败后由模型解释并最终 run.completed，因此不能把 tool.failed 或 assistant.completed 当作运行终态。
+
+### 前端如何更新界面
+
+| 收到事件 | 更新方式 |
+| --- | --- |
+| run.started | 将本次请求标为运行中，绑定 session_id/run_id，展示本轮 thinking 快照，而非以后切换的新配置 |
+| assistant.started | 按 session_id + run_id + message_id 建立临时助手消息；不是每个 delta 新建一条消息 |
+| assistant.text.delta | 仅向该消息正文追加 data.delta |
+| assistant.reasoning.delta | 仅向同一消息的独立 reasoning 区域追加 data.delta，不拼入正文或下一轮请求 |
+| assistant.completed | 关闭该消息的生成状态，但保留整轮运行状态 |
+| tool.started / tool.delta | 按 session_id + run_id + tool_call_id 建立/更新工具卡片；工具事件不依赖 message_id，不按工具名合并 |
+| tool.completed / tool.failed | 标记对应工具完成/失败；兼容 text/status、output、code/message 的不同结果形态，仍等待运行终态 |
+| run.completed | 标记本轮成功，用 answer 核对最终结果，不再追加一份相同回答；随后刷新完整历史并整体替换临时列表，以历史确认最终消息边界 |
+| run.failed / run.cancelled | 标记本轮失败/取消，保留已收到的过程用于提示，不自动重发 prompt |
+| 未知事件或注释心跳 | 不当作成功；未知类型可忽略展示，注释不进入 JSON 解析 |
+
+流式临时状态不要直接作为完整历史提交；下一轮仍只发送新 message。连接结束却未收到运行终态时，标记“结果未确认”，不是成功，也不是已经回滚。用户切换会话后，晚到事件只能更新原 session_id/run_id，不能写入当前页面刚选中的另一会话。
+
+### 接纳、终态和取消
+
+- 接纳前：404/409/422/429/503 等普通 JSON 错误，不发送 run.started，不启动模型。
+- 接纳后：响应已是 200，执行失败通过 run.failed，不能期待 HTTP 改成 502。
+- 只有 run.completed 表示成功。EOF 前没收到终态、网络异常、解析失败都按结果未确认处理，不自动重试。
+- UI 停止按钮使用 AbortController.abort()；后端检测断线后尝试取消和清理。显示“已停止接收/正在终止”，不要承诺已经回滚或立即停止所有工具。
+- 缓冲溢出、无法投影的数据会终止本轮；发送阻塞也有上限。终态过大时可能执行已经成功，但不能传回完整答案，应检查历史，不重跑。
+- 没有 Last-Event-ID、重连补发、后台运行/查询、幂等键或单独取消接口。失败/取消保护不会因切换模型而清除。
+
+## 6. 浏览器最小流式客户端
+
+以下为接入示例，不包含自动重试。建议正式 UI 再对各事件 data 做具体类型校验，限制浏览器展示缓冲，并按 session_id/run_id 归属更新对应界面，不要覆盖后来选中的会话。
 
 ```ts
-// 已配置同源代理，无需访问令牌。
-const api = createOmtClient('');
-const session = await api.createSession('分析项目');
-const result = await api.run(session.session_id, '请分析项目结构，暂时不要修改文件');
-// 到这里运行已成功。后面的刷新失败只能提示“刷新失败”，不能重新调用 run。
-console.log(result.answer, result.warnings);
-const messages = await api.getMessages(session.session_id);
-const sessions = await api.listSessions();
-// 用 messages 替换该会话历史，用 sessions 替换侧栏列表。
+interface RunEvent {
+  version: 1;
+  seq: number;
+  type: string;
+  session_id: string;
+  run_id: string;
+  message_id?: string;
+  tool_call_id?: string;
+  role?: 'assistant' | 'tool';
+  data: Record<string, unknown>;
+}
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function envelope(value: unknown): RunEvent {
+  if (!record(value) || value.version !== 1 || !Number.isInteger(value.seq)
+      || typeof value.seq !== 'number' || typeof value.type !== 'string'
+      || typeof value.session_id !== 'string' || typeof value.run_id !== 'string'
+      || !record(value.data)
+      || (value.message_id !== undefined && typeof value.message_id !== 'string')
+      || (value.tool_call_id !== undefined && typeof value.tool_call_id !== 'string')
+      || (value.role !== undefined && value.role !== 'assistant' && value.role !== 'tool')) {
+    throw new Error('事件格式或版本不受支持，运行结果未确认');
+  }
+  return {
+    version: 1, seq: value.seq, type: value.type,
+    session_id: value.session_id, run_id: value.run_id, data: value.data,
+    message_id: value.message_id, tool_call_id: value.tool_call_id, role: value.role,
+  };
+}
+export async function streamRun(
+  baseUrl: string, sessionId: string, message: string,
+  onEvent: (event: RunEvent) => void, signal: AbortSignal,
+): Promise<RunEvent> {
+  const response = await fetch(
+    `${baseUrl.replace(/\/+$/, '')}/api/v1/sessions/${encodeURIComponent(sessionId)}/runs/stream`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ message }), signal },
+  );
+  if (!response.ok) {
+    // 接纳前 HTTP 错误；实际 UI 应解析稳定 error.code 并保留基础设施错误兜底。
+    const body: unknown = await response.json().catch(() => null);
+    const text = record(body) && record(body.error) && typeof body.error.message === 'string'
+      ? body.error.message : `HTTP ${response.status}`;
+    throw new Error(text);
+  }
+  if (!response.headers.get('content-type')?.startsWith('text/event-stream') || !response.body) {
+    throw new Error('不是可读取的事件流，运行结果未确认');
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let buffer = '';
+  let terminal: RunEvent | undefined;
+  let runId: string | undefined;
+  let previousSeq = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      let boundary: number;
+      while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const lines = frame.split('\n');
+        const payload = lines.filter(line => line.startsWith('data: ')).map(line => line.slice(6)).join('\n');
+        if (!payload) continue; // 包括注释心跳
+        const parsed: unknown = JSON.parse(payload);
+        const event = envelope(parsed);
+        const name = lines.find(line => line.startsWith('event: '))?.slice(7);
+        if (name !== event.type || event.session_id !== sessionId || terminal
+            || event.seq <= previousSeq || (runId !== undefined && event.run_id !== runId)) {
+          throw new Error('事件关联或顺序错误，运行结果未确认');
+        }
+        runId = event.run_id;
+        previousSeq = event.seq;
+        onEvent(event);
+        if (['run.completed', 'run.failed', 'run.cancelled'].includes(event.type)) terminal = event;
+      }
+      if (done) break;
+    }
+    if (buffer.trim() || !terminal) throw new Error('连接结束但没有完整终态，运行结果未确认');
+    return terminal; // 调用方按 type 区分成功、失败与取消
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
 ```
 
-生产 UI 应分别处理“运行失败”和“成功后刷新失败”，并按 session_id 保存异步结果；不要因为切换了会话就把返回答案放进当前新会话。也不要把用户/助手/工具正文作为可信 HTML 直接插入页面；Markdown 渲染需禁用或清理不可信 HTML，工具参数与输出建议以转义文本或 JSON 展示。
+调用时为每轮创建 AbortController，停止按钮调用 abort；不要在组件自动重试或渲染逻辑里提交 prompt。该解析器针对本服务固定使用 LF 的 SSE 输出；如果扩展接收其他服务，还需支持 CRLF 等标准行结束形式。
 
-## 7. 能力边界与交付给前端 AI 的约束清单
+Markdown/工具正文都是不可信输入，必须禁用或清理 HTML，不能直接 innerHTML。切换会话后的晚到结果按 ID 保存；刷新历史用完整数组替换临时流式视图。
 
-### 已支持
+## 7. 错误、限制和后续工作
 
-- 创建空会话、获取列表、按 ID 加载完整历史。
-- 在已有会话连续发送多轮消息，历史由后端保存。
-- 获取最终回答及非致命警告。
-- 从历史中展示助手的工具请求及工具结果。
-- 已完成的持久化会话在服务重启后继续使用。
+普通错误统一为 `{"error":{"code":"...","message":"...","run_id":"可选"}}`。不采用默认 Pydantic detail 数组，不回显原始 input。HTTP 状态及错误码见 [HTTP 错误表](api.md#错误与执行边界)。
 
-### 当前没有对应接口或保证
+- `session_incomplete` / `run_failed`：提示人工检查，不自动重跑；必要时可新建会话，但不是撤销旧操作。
+- `manager_busy` / `session_busy` / `capacity_exceeded`：本次被拒绝，不排队，等用户重试。
+- `configuration_save_failed`：可能有部分文件写入；重新检查配置，不能当作完全未保存。
+- `model_change_failed`：原运行配置保留，UI 不应提前显示新选择已生效。
+- `stream_buffer_exceeded` / `invalid_stream_data` / `stream_event_too_large`：本次传输不能完整完成，检查会话，不自动重试。
+- 普通 GET 可由用户稍后重查；写操作、运行 POST 不自动重试。
 
-- SSE、WebSocket、逐 token 文本、实时工具进度。
-- `GET /runs/{run_id}`、后台任务列表、持久化运行状态。
-- 停止、取消、暂停、断线事件补发或恢复执行；浏览器 AbortController 只停止本地等待，不保证后端停止。
-- 会话删除、重命名、搜索、服务端分页、单独查询会话详情。
-- 编辑/删除历史、重新生成、分支、上传图片或附件。
-- 前端指定模型、系统提示词、工具、MCP、Skills 或工作目录。
-- 登录、注册、令牌刷新、多用户会话隔离、工具执行审批或沙箱。
-- 请求幂等、失败回滚、断线后可靠判断某次请求是否执行过。
+当前没有：多用户认证隔离、工具沙箱/审批、会话删除/重命名/分页、历史编辑/重新生成/分支、文件上传、按 Session 保存模型、CLI `/models` 或 CLI reasoning 展示。CLI 后续接入与会话模型持久化另行推进。
 
-前端第一版应围绕“会话侧栏 + 历史消息 + 输入框 + 等待状态 + 错误/警告提示”实现。不要把未实现能力做成看似有效的按钮，也不要用模拟打字动画冒充服务端实时输出。若使用演示数据，应与真实接口模式明确区分。
-
-## 8. 文档维护依据
-
-本文契约核对范围为 `src/omt/api/app.py`、`routes.py`、`schemas.py`、`settings.py`，以及与外部会话行为相关的 `src/omt/core/session_manager.py`、`store.py`。接口变化时应同步更新本文。
-
-仓库内进一步阅读：
-
-- [后端启动配置与 HTTP 使用说明](api.md)
-- [HTTP 与会话行为测试说明](tests/api.md)
-- [项目快速开始](../README.md)
+离线证据见 [运行配置与流式测试](tests/api-runtime-streaming.md)；真实浏览器、代理和局域网验证尚不属于测试通过的含义。
